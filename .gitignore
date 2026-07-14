@@ -1,0 +1,59 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# next.js
+.next/
+out/
+build/
+dist/
+
+# production
+*.tsbuildinfo
+next-env.d.ts
+
+# env & secrets（切勿提交）
+.env
+.env.*
+!.env.example
+*.pem
+
+# 本地运行时数据（账号、索引、缩略图）
+data/
+data/**
+
+# logs / debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
+
+# testing
+coverage/
+.nyc_output/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+
+# 备份文件（可能含密钥）
+*.backup.json
+notionpan-backup-*.json
+
+# optional local tooling
+.turbo/
+.vercel/
