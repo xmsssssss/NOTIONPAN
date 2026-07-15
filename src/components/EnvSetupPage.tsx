@@ -41,6 +41,7 @@ export function EnvSetupPage({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "保存失败");
+      // 配置已写入；进入网盘时再同步索引
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");

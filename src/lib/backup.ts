@@ -2,7 +2,13 @@ import fs from "fs";
 import path from "path";
 import { readAppConfig, writeAppConfig, type AppConfig } from "./app-config";
 import { readEnvConfig, writeEnvConfig, softReloadEnv } from "./runtime-env";
-import { getMeta, indexCount } from "./db";
+import {
+  closeDb,
+  exportIndexJson,
+  getMeta,
+  importIndexJson,
+  indexCount,
+} from "./db";
 
 export type BackupPayload = {
   version: 1;
@@ -13,12 +19,15 @@ export type BackupPayload = {
     indexCount?: number;
     lastSyncAt?: string | null;
   };
+  /** 旧版：sqlite 二进制 base64（已废弃，导入时忽略） */
   indexBase64?: string | null;
+  /** 新版：JSON 索引文本 */
+  indexJson?: string | null;
   includeIndex: boolean;
 };
 
 function dataDir() {
-  const dir = path.join(process.cwd(), "data");
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -28,11 +37,12 @@ export function exportBackup(options?: { includeIndex?: boolean }): BackupPayloa
   const { values } = readEnvConfig();
   const appConfig = readAppConfig();
 
-  let indexBase64: string | null = null;
+  let indexJson: string | null = null;
   if (includeIndex) {
-    const dbFile = path.join(dataDir(), "index.sqlite");
-    if (fs.existsSync(dbFile)) {
-      indexBase64 = fs.readFileSync(dbFile).toString("base64");
+    try {
+      indexJson = exportIndexJson();
+    } catch {
+      indexJson = null;
     }
   }
 
@@ -42,10 +52,22 @@ export function exportBackup(options?: { includeIndex?: boolean }): BackupPayloa
     appConfig,
     env: values,
     meta: {
-      indexCount: indexCount(),
-      lastSyncAt: getMeta("last_sync_at"),
+      indexCount: (() => {
+        try {
+          return indexCount();
+        } catch {
+          return 0;
+        }
+      })(),
+      lastSyncAt: (() => {
+        try {
+          return getMeta("last_sync_at");
+        } catch {
+          return null;
+        }
+      })(),
     },
-    indexBase64,
+    indexJson,
     includeIndex,
   };
 }
@@ -78,11 +100,17 @@ export function importBackup(payload: BackupPayload): {
     restored.push("env");
   }
 
-  if (payload.includeIndex && payload.indexBase64) {
-    const dbFile = path.join(dataDir(), "index.sqlite");
-    // close handled by process restart ideally; overwrite file
-    fs.writeFileSync(dbFile, Buffer.from(payload.indexBase64, "base64"));
-    restored.push("index");
+  if (payload.includeIndex) {
+    if (payload.indexJson) {
+      closeDb();
+      importIndexJson(payload.indexJson);
+      restored.push("index");
+    } else if (payload.indexBase64) {
+      // 兼容旧备份里的 sqlite 文件：仅落盘，当前运行时不再读取 sqlite
+      const dbFile = path.join(dataDir(), "index.sqlite.legacy");
+      fs.writeFileSync(dbFile, Buffer.from(payload.indexBase64, "base64"));
+      restored.push("index(legacy-sqlite-file-only)");
+    }
   }
 
   return {

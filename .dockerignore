@@ -1,0 +1,38 @@
+# dependencies & build
+node_modules
+.next
+out
+dist
+build
+coverage
+.turbo
+.vercel
+
+# git / ide
+.git
+.gitignore
+.idea
+.vscode
+*.md
+!README.md
+
+# local secrets & runtime (不要打进镜像)
+.env
+.env.*
+!.env.example
+data
+*.pem
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# backups
+*.backup.json
+notionpan-backup-*.json
+
+# misc
+Dockerfile*
+docker-compose*.yml
+.opencode
+**/.DS_Store
+Thumbs.db

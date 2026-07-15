@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* 确保 production 扫描全部组件，避免 dev/start 样式不一致 */
+@source "../../src/**/*.{js,ts,jsx,tsx}";
+
 :root {
   --bg: #f4f7ff;
   --panel: #ffffff;
@@ -23,6 +26,7 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100%;
+  min-height: 100dvh;
   background:
     radial-gradient(1000px 500px at 0% -10%, rgba(79, 124, 255, 0.18), transparent 55%),
     radial-gradient(900px 480px at 100% 0%, rgba(34, 195, 181, 0.16), transparent 50%),
@@ -38,11 +42,60 @@ body {
     "PingFang SC",
     "Microsoft YaHei",
     sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* 移动端：整页固定高度，列表区域内部滚动 */
+@media (max-width: 639px) {
+  html,
+  body {
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
+}
+
+/* 移动端安全区 */
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+.safe-top {
+  /* 至少 16px 顶部间距，刘海机再叠加 safe-area */
+  padding-top: calc(1rem + env(safe-area-inset-top, 0px)) !important;
+}
+.fab-offset {
+  bottom: max(1.25rem, calc(1rem + env(safe-area-inset-bottom, 0px)));
+  right: max(1.25rem, calc(1rem + env(safe-area-inset-right, 0px)));
+}
+.upload-panel-offset {
+  bottom: max(6rem, calc(5.5rem + env(safe-area-inset-bottom, 0px)));
+  right: max(1.25rem, calc(1rem + env(safe-area-inset-right, 0px)));
+  left: max(1.25rem, env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 640px) {
+  .upload-panel-offset {
+    left: auto;
+    width: min(100vw - 2rem, 22rem);
+  }
+}
+
+/* 移动端触控目标 */
+@media (max-width: 639px) {
+  button,
+  a,
+  [role="menuitem"] {
+    min-height: 2.5rem;
+  }
 }
 
 ::-webkit-scrollbar {

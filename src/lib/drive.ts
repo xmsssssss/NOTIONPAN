@@ -144,18 +144,45 @@ export async function listFiles(options: {
   const notion = getNotionClient();
   const folder = sanitizeFolder(options.folder);
 
-  // SQLite 索引：启动全量同步后列表走本地
-  const cache = await ensureIndexReady(notion, queryPages, Boolean(options.refresh));
-  const files = listIndexFiles(folder, options.query);
-  const folders = listIndexSubfolders(folder, options.query);
+  // 本地索引优先；仅空库 / refresh=1 时同步 Notion
+  try {
+    const cache = await ensureIndexReady(notion, queryPages, Boolean(options.refresh));
+    const files = listIndexFiles(folder, options.query);
+    const folders = listIndexSubfolders(folder, options.query);
 
-  return {
-    files,
-    folders,
-    hasMore: false,
-    nextCursor: null,
-    cache,
-  };
+    return {
+      files,
+      folders,
+      hasMore: false,
+      nextCursor: null,
+      cache,
+    };
+  } catch (e) {
+    // 同步失败时尽量返回本地索引，避免整页 500
+    try {
+      const files = listIndexFiles(folder, options.query);
+      const folders = listIndexSubfolders(folder, options.query);
+      if (files.length > 0 || folders.length > 0) {
+        return {
+          files,
+          folders,
+          hasMore: false,
+          nextCursor: null,
+          cache: {
+            fromCache: true,
+            syncedAt: null,
+            count: files.length,
+          },
+        };
+      }
+    } catch {
+      // ignore
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `同步/读取文件失败：${msg}。请检查 API Key、Database ID，以及数据库是否已把连接（Integration）添加到页面。`,
+    );
+  }
 }
 
 export async function syncIndex(force = true) {
@@ -376,6 +403,7 @@ async function uploadBinary(
   return created.id;
 }
 
+/** 服务端上传：浏览器只连本服务，密钥不离开服务器 */
 export async function uploadFile(input: {
   file: File | Blob;
   filename: string;

@@ -17,7 +17,12 @@ type Settings = {
   app: { siteTitle: string; siteDescription: string; username?: string };
   account: { username: string };
   env: Record<string, string>;
-  index?: { count?: number; lastSyncAt?: string | null; bootstrapped?: boolean };
+  index?: {
+    count?: number;
+    lastSyncAt?: string | null;
+    bootstrapped?: boolean;
+    backend?: string | null;
+  };
 };
 
 const TABS: Array<{
@@ -47,7 +52,7 @@ const TABS: Array<{
   {
     id: "index",
     label: "索引同步",
-    desc: "SQLite 状态",
+    desc: "本地索引状态",
     icon: <IconRefresh className="h-4 w-4" />,
   },
   {
@@ -282,8 +287,8 @@ export function AdminPage({
   const currentTab = TABS.find((t) => t.id === tab)!;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-sky-50">
-      <div className="mx-auto flex min-h-screen max-w-6xl">
+    <div className="safe-top safe-bottom min-h-screen min-h-[100dvh] bg-gradient-to-br from-slate-50 via-white to-sky-50">
+      <div className="mx-auto flex min-h-[100dvh] max-w-6xl">
         {/* Desktop sidebar */}
         <aside className="hidden w-64 shrink-0 border-r border-slate-200/80 bg-white/80 p-4 backdrop-blur md:flex md:flex-col">
           <div className="mb-6 px-2">
@@ -334,14 +339,14 @@ export function AdminPage({
             <button
               type="button"
               onClick={onBack}
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100"
             >
               ← 返回网盘
             </button>
             <button
               type="button"
               onClick={onLogout}
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-red-600 hover:bg-red-50"
             >
               <IconLogout className="h-4 w-4" />
               退出登录
@@ -352,33 +357,74 @@ export function AdminPage({
         {/* Main */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Top bar */}
-          <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-slate-200/80 bg-white/90 px-4 py-3 backdrop-blur sm:px-6">
-            <div className="flex min-w-0 items-center gap-3">
+          <header className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-slate-200/80 bg-white/95 px-3 py-2.5 backdrop-blur sm:gap-3 sm:px-6 sm:py-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+              {/* 手机：左侧直接返回网盘 */}
               <button
                 type="button"
-                className="rounded-lg border border-slate-200 p-2 text-slate-600 md:hidden"
-                onClick={() => setMobileNav((v) => !v)}
+                onClick={onBack}
+                className="flex h-10 shrink-0 items-center gap-1 rounded-xl border border-sky-200 bg-sky-50 px-2.5 text-sm font-medium text-sky-700 active:bg-sky-100 md:hidden"
+                aria-label="返回网盘"
               >
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M4 7h16M4 12h16M4 17h16" />
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <path d="M15 18 9 12l6-6" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
+                网盘
               </button>
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold text-slate-800 sm:text-lg">
                   {currentTab.label}
                 </h2>
-                <p className="truncate text-xs text-slate-500">{currentTab.desc}</p>
+                <p className="hidden truncate text-xs text-slate-500 sm:block">{currentTab.desc}</p>
               </div>
             </div>
-            <div className="hidden items-center gap-2 sm:flex">
-              <BtnGhost onClick={onBack}>返回网盘</BtnGhost>
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              <button
+                type="button"
+                onClick={onBack}
+                className="hidden rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 active:bg-slate-50 md:inline-flex"
+              >
+                返回网盘
+              </button>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="rounded-xl border border-red-100 bg-white px-3 py-2 text-xs font-medium text-red-600 active:bg-red-50 sm:text-sm"
+              >
+                退出
+              </button>
             </div>
           </header>
 
-          {/* Mobile nav drawer */}
+          {/* Mobile nav: horizontal scroll chips */}
+          <div className="border-b border-slate-100 bg-white px-2 py-2 md:hidden">
+            <div className="flex gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {TABS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setTab(item.id);
+                    setMobileNav(false);
+                    setMsg(null);
+                    setErr(null);
+                  }}
+                  className={`shrink-0 rounded-full px-3.5 py-2 text-xs font-medium transition ${
+                    tab === item.id
+                      ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow"
+                      : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Mobile expanded nav (hamburger) */}
           {mobileNav && (
-            <div className="border-b border-slate-200 bg-white px-3 py-2 md:hidden">
-              <div className="grid grid-cols-2 gap-1.5">
+            <div className="border-b border-slate-200 bg-white px-3 py-3 md:hidden">
+              <div className="grid grid-cols-1 gap-1.5">
                 {TABS.map((item) => (
                   <button
                     key={item.id}
@@ -389,23 +435,29 @@ export function AdminPage({
                       setMsg(null);
                       setErr(null);
                     }}
-                    className={`rounded-xl px-3 py-2 text-left text-sm ${
+                    className={`flex items-center gap-3 rounded-xl px-3 py-3 text-left text-sm ${
                       tab === item.id
                         ? "bg-sky-50 font-medium text-sky-700 ring-1 ring-sky-200"
-                        : "text-slate-600 hover:bg-slate-50"
+                        : "text-slate-600 active:bg-slate-50"
                     }`}
                   >
-                    {item.label}
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+                      {item.icon}
+                    </span>
+                    <span>
+                      <span className="block">{item.label}</span>
+                      <span className="block text-[11px] text-slate-400">{item.desc}</span>
+                    </span>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          <main className="flex-1 px-4 py-5 sm:px-6">
+          <main className="flex-1 px-3 py-4 sm:px-6 sm:py-5">
             {(msg || err) && (
               <div
-                className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
+                className={`mb-3 rounded-xl border px-3 py-2.5 text-sm sm:mb-4 sm:px-4 sm:py-3 ${
                   err
                     ? "border-red-200 bg-red-50 text-red-700"
                     : "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -420,7 +472,7 @@ export function AdminPage({
                 加载设置…
               </div>
             ) : (
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                 {tab === "site" && (
                   <Panel
                     title="网站信息"
@@ -467,9 +519,9 @@ export function AdminPage({
                 {tab === "env" && (
                   <Panel
                     title="环境变量"
-                    hint="保存后写入 .env.local 并立即软加载，一般无需重启"
+                    hint="保存后写入 .env.local 并立即软加载"
                     actions={
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                         <BtnGhost onClick={() => void reloadEnv()}>重新加载</BtnGhost>
                         <BtnPrimary onClick={() => void saveEnv()} disabled={busy}>
                           {busy ? "保存中…" : "保存并软加载"}
@@ -481,7 +533,7 @@ export function AdminPage({
                       label="NOTION_API_KEY"
                       value={envKey}
                       onChange={setEnvKey}
-                      placeholder="ntn_...（显示 **** 表示已配置，不改可保留）"
+                      placeholder="ntn_...（显示 **** 表示已配置）"
                     />
                     <Field label="NOTION_DATABASE_ID" value={envDb} onChange={setEnvDb} />
                     <Field
@@ -491,7 +543,7 @@ export function AdminPage({
                       placeholder="可留空自动探测"
                     />
                     <Field
-                      label="SESSION_SECRET（≥32 字符，生产建议设置）"
+                      label="SESSION_SECRET（≥32 字符）"
                       value={envSecret}
                       onChange={setEnvSecret}
                       placeholder="随机长字符串"
@@ -502,15 +554,25 @@ export function AdminPage({
                 {tab === "index" && (
                   <Panel
                     title="索引同步"
-                    hint="列表优先读本地 SQLite，上传/删除会增量更新；可手动全量同步"
+                    hint="列表优先读本地索引；可手动全量同步"
                     actions={
                       <BtnPrimary onClick={() => void syncIndex()} disabled={busy}>
                         {busy ? "同步中…" : "全量同步 Notion"}
                       </BtnPrimary>
                     }
                   >
-                    <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 sm:gap-3 lg:grid-cols-4">
                       <StatCard label="索引条数" value={String(indexMeta?.count ?? 0)} />
+                      <StatCard
+                        label="存储后端"
+                        value={
+                          indexMeta?.backend === "sqlite"
+                            ? "sqlite"
+                            : indexMeta?.backend === "json"
+                              ? "JSON"
+                              : "—"
+                        }
+                      />
                       <StatCard
                         label="上次同步"
                         value={
@@ -524,8 +586,10 @@ export function AdminPage({
                         value={indexMeta?.bootstrapped ? "已就绪" : "待同步"}
                       />
                     </div>
-                    <p className="text-xs text-slate-500">
-                      数据文件：`data/index.sqlite` · 缩略图：`data/thumbs/`
+                    <p className="break-words text-xs leading-relaxed text-slate-500">
+                      优先 <code className="rounded bg-slate-100 px-1">node:sqlite</code>
+                      ，否则 <code className="rounded bg-slate-100 px-1">index.json</code>
+                      。缩略图在 <code className="rounded bg-slate-100 px-1">data/thumbs/</code>
                     </p>
                   </Panel>
                 )}
@@ -533,14 +597,14 @@ export function AdminPage({
                 {tab === "backup" && (
                   <Panel
                     title="备份 / 恢复"
-                    hint="导出含账号哈希、站点配置、env、可选 SQLite 索引（不含缩略图文件）"
+                    hint="导出含账号、站点配置、env、可选本地索引"
                   >
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <BtnPrimary onClick={() => void exportBackup(true)} disabled={busy}>
                         导出完整备份
                       </BtnPrimary>
-                      <BtnGhost onClick={() => void exportBackup(false)}>仅配置（不含索引）</BtnGhost>
-                      <label className="inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50">
+                      <BtnGhost onClick={() => void exportBackup(false)}>仅配置</BtnGhost>
+                      <label className="inline-flex w-full cursor-pointer items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 active:bg-slate-50 sm:w-auto sm:py-2">
                         导入备份
                         <input
                           type="file"
@@ -554,8 +618,8 @@ export function AdminPage({
                         />
                       </label>
                     </div>
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-                      导入会覆盖当前账号与 env 配置。含索引的备份写入后，建议在「索引同步」页再点一次全量同步以确保一致。
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900 sm:px-4 sm:py-3">
+                      导入会覆盖当前账号与 env。含索引的备份写入后，建议再点一次全量同步。
                     </div>
                   </Panel>
                 )}
@@ -580,13 +644,17 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
-        <div>
+    <div className="space-y-4 sm:space-y-5">
+      <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h3 className="text-base font-semibold text-slate-800">{title}</h3>
-          {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+          {hint && <p className="mt-1 text-xs leading-relaxed text-slate-500">{hint}</p>}
         </div>
-        {actions && <div className="shrink-0">{actions}</div>}
+        {actions && (
+          <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
+            {actions}
+          </div>
+        )}
       </div>
       <div className="space-y-4">{children}</div>
     </div>

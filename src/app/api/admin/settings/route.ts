@@ -12,13 +12,19 @@ export async function GET() {
   return withAuth(async () => {
     const cfg = readAppConfig();
     const env = readEnvConfig();
+    let index: ReturnType<typeof getSyncStatus> | null = null;
+    try {
+      index = getSyncStatus();
+    } catch {
+      index = null;
+    }
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(cfg),
       account: { username: cfg.username },
       env: env.masked,
       envKeys: ENV_KEYS,
-      index: getSyncStatus(),
+      index,
     });
   });
 }
@@ -66,13 +72,22 @@ export async function PUT(req: NextRequest) {
     }
 
     const next = writeAppConfig(patch as Parameters<typeof writeAppConfig>[0]);
+
+    // 索引状态可选：保存 env 时不应因索引失败而整请求 500
+    let index: ReturnType<typeof getSyncStatus> | null = null;
+    try {
+      index = getSyncStatus();
+    } catch {
+      index = null;
+    }
+
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(next),
       account: { username: next.username },
       env: readEnvConfig().masked,
       envSaved,
-      index: getSyncStatus(),
+      index,
     });
   });
 }

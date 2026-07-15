@@ -57,3 +57,6 @@ notionpan-backup-*.json
 # optional local tooling
 .turbo/
 .vercel/
+
+# docker local env (compose 用 .env，勿提交密钥)
+# .env 已由上方 .env.* 规则忽略

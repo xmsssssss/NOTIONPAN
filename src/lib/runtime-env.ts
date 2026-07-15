@@ -6,6 +6,7 @@ const ENV_KEYS = [
   "NOTION_DATABASE_ID",
   "NOTION_DATA_SOURCE_ID",
   "SESSION_SECRET",
+  "COOKIE_SECURE",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
@@ -13,8 +14,35 @@ export type EnvKey = (typeof ENV_KEYS)[number];
 let overrides: Record<string, string> = {};
 let loaded = false;
 
+function dataDir() {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * 环境文件路径：
+ * - ENV_FILE 优先
+ * - Docker / DATA_DIR：写入 data/.env.local（随 volume 持久化）
+ * - 本地开发：优先已有 .env.local，否则 data/.env.local 或项目根
+ */
 function envFilePath() {
-  return path.join(process.cwd(), ".env.local");
+  if (process.env.ENV_FILE) return process.env.ENV_FILE;
+
+  const inData = path.join(dataDir(), ".env.local");
+  const inRoot = path.join(process.cwd(), ".env.local");
+
+  // 已有 data 内配置（Docker 常见）
+  if (fs.existsSync(inData)) return inData;
+  // 本地根目录 .env.local
+  if (fs.existsSync(inRoot) && process.env.DOCKER !== "1" && !process.env.DATA_DIR) {
+    return inRoot;
+  }
+  // Docker 默认写到 volume
+  if (process.env.DOCKER === "1" || process.env.DATA_DIR) {
+    return inData;
+  }
+  return inRoot;
 }
 
 export function parseEnvText(text: string): Record<string, string> {

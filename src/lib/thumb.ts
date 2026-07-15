@@ -3,17 +3,24 @@ import path from "path";
 import sharp from "sharp";
 import { getFile } from "./drive";
 
-const THUMB_DIR = path.join(process.cwd(), "data", "thumbs");
+function dataDir() {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function thumbDir() {
+  const dir = path.join(dataDir(), "thumbs");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 const MAX_EDGE = 360;
 const QUALITY = 72;
 
-function ensureDir() {
-  if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
-}
-
 export function thumbPath(id: string) {
   const safe = id.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path.join(THUMB_DIR, `${safe}.webp`);
+  return path.join(thumbDir(), `${safe}.webp`);
 }
 
 export function isImageFile(mimeType: string, name: string): boolean {
@@ -24,7 +31,6 @@ export function isImageFile(mimeType: string, name: string): boolean {
 export async function getOrCreateThumb(
   id: string,
 ): Promise<{ buffer: Buffer; contentType: string; cached: boolean }> {
-  ensureDir();
   const out = thumbPath(id);
 
   if (fs.existsSync(out)) {

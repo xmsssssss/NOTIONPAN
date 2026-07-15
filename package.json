@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
+    "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
     "build": "next build --webpack",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "eslint ."
   },
   "dependencies": {
     "@notionhq/client": "^5.23.1",
     "bcryptjs": "^3.0.3",
+    "form-data": "^4.0.6",
     "iron-session": "^8.0.4",
     "mime-types": "^3.0.2",
     "next": "^16.2.10",
@@ -22,6 +23,7 @@
     "@eslint/eslintrc": "^3.3.6",
     "@tailwindcss/postcss": "^4.3.2",
     "@types/bcryptjs": "^2.4.6",
+    "@types/form-data": "^2.2.1",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",

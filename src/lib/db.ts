@@ -1,7 +1,12 @@
 import fs from "fs";
 import path from "path";
-import { DatabaseSync } from "node:sqlite";
 import type { DriveFile, FileKind } from "./types";
+
+/**
+ * 本地文件索引
+ * - 优先：Node 内置 node:sqlite（Node ≥ 22.5）
+ * - 回退：data/index.json（兼容旧 Node）
+ */
 
 export type IndexRow = {
   id: string;
@@ -16,59 +21,190 @@ export type IndexRow = {
   is_folder_marker: number;
 };
 
-let db: DatabaseSync | null = null;
+type IndexStore = {
+  version: 1;
+  meta: Record<string, string>;
+  files: IndexRow[];
+};
 
-function dbPath() {
-  const dir = path.join(process.cwd(), "data");
+type SqliteDb = {
+  exec: (sql: string) => void;
+  prepare: (sql: string) => {
+    run: (...args: unknown[]) => unknown;
+    get: (...args: unknown[]) => unknown;
+    all: (...args: unknown[]) => unknown[];
+  };
+  close: () => void;
+};
+
+export type IndexBackend = "sqlite" | "json";
+
+const EMPTY: IndexStore = { version: 1, meta: {}, files: [] };
+
+let backend: IndexBackend | null = null;
+let sqliteDb: SqliteDb | null = null;
+let jsonCache: IndexStore | null = null;
+
+function dataDir() {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, "index.sqlite");
+  return dir;
 }
 
-export function getDb(): DatabaseSync {
-  if (db) return db;
-  const database = new DatabaseSync(dbPath());
-  database.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-    CREATE TABLE IF NOT EXISTS files (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      size INTEGER NOT NULL DEFAULT 0,
-      mime_type TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      folder TEXT NOT NULL,
-      created_time TEXT NOT NULL,
-      last_edited_time TEXT NOT NULL,
-      url TEXT,
-      is_folder_marker INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder);
-    CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);
-    CREATE INDEX IF NOT EXISTS idx_files_marker ON files(is_folder_marker);
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-  `);
-  db = database;
-  return database;
+function sqlitePath() {
+  return path.join(dataDir(), "index.sqlite");
 }
 
-export function getMeta(key: string): string | null {
-  const row = getDb()
-    .prepare("SELECT value FROM meta WHERE key = ?")
-    .get(key) as { value: string } | undefined;
-  return row?.value ?? null;
+function jsonPath() {
+  return path.join(dataDir(), "index.json");
 }
 
-export function setMeta(key: string, value: string) {
-  getDb()
+function tryOpenSqlite(): SqliteDb | null {
+  try {
+    // 动态加载，避免打包期静态解析失败
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("node:sqlite") as {
+      DatabaseSync: new (path: string) => SqliteDb;
+    };
+    if (!mod?.DatabaseSync) return null;
+    const db = new mod.DatabaseSync(sqlitePath());
+    db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        mime_type TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        created_time TEXT NOT NULL,
+        last_edited_time TEXT NOT NULL,
+        url TEXT,
+        is_folder_marker INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder);
+      CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);
+      CREATE INDEX IF NOT EXISTS idx_files_marker ON files(is_folder_marker);
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    return db;
+  } catch {
+    return null;
+  }
+}
+
+function loadJsonStore(): IndexStore {
+  if (jsonCache) return jsonCache;
+  const p = jsonPath();
+  try {
+    if (fs.existsSync(p)) {
+      const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<IndexStore>;
+      jsonCache = {
+        version: 1,
+        meta: raw.meta && typeof raw.meta === "object" ? raw.meta : {},
+        files: Array.isArray(raw.files) ? raw.files : [],
+      };
+      return jsonCache;
+    }
+  } catch {
+    // corrupt
+  }
+  jsonCache = { ...EMPTY, meta: {}, files: [] };
+  return jsonCache;
+}
+
+function saveJsonStore(store: IndexStore) {
+  const p = jsonPath();
+  const tmp = `${p}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(store), "utf8");
+  fs.renameSync(tmp, p);
+  jsonCache = store;
+}
+
+function ensureBackend(): IndexBackend {
+  if (backend) return backend;
+  const db = tryOpenSqlite();
+  if (db) {
+    sqliteDb = db;
+    backend = "sqlite";
+    // 若仅有旧 JSON 索引且 sqlite 为空，可一次性迁移
+    tryMigrateJsonToSqlite();
+    return backend;
+  }
+  backend = "json";
+  return backend;
+}
+
+function tryMigrateJsonToSqlite() {
+  if (!sqliteDb) return;
+  const count = sqliteDb.prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number };
+  if (count?.c > 0) return;
+  if (!fs.existsSync(jsonPath())) return;
+  try {
+    const store = loadJsonStore();
+    if (!store.files.length && !Object.keys(store.meta).length) return;
+    replaceAllIndexSqlite(store.files);
+    for (const [k, v] of Object.entries(store.meta)) {
+      setMetaSqlite(k, v);
+    }
+  } catch {
+    // ignore migrate errors
+  }
+}
+
+export function getIndexBackend(): IndexBackend {
+  return ensureBackend();
+}
+
+export function closeDb() {
+  if (sqliteDb) {
+    try {
+      sqliteDb.close();
+    } catch {
+      // ignore
+    }
+  }
+  sqliteDb = null;
+  jsonCache = null;
+  backend = null;
+}
+
+// ---------- meta ----------
+
+function setMetaSqlite(key: string, value: string) {
+  sqliteDb!
     .prepare(
       `INSERT INTO meta(key, value) VALUES(?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     )
     .run(key, value);
 }
+
+export function getMeta(key: string): string | null {
+  if (ensureBackend() === "sqlite") {
+    const row = sqliteDb!.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+  return loadJsonStore().meta[key] ?? null;
+}
+
+export function setMeta(key: string, value: string) {
+  if (ensureBackend() === "sqlite") {
+    setMetaSqlite(key, value);
+    return;
+  }
+  const store = loadJsonStore();
+  store.meta[key] = value;
+  saveJsonStore(store);
+}
+
+// ---------- row helpers ----------
 
 export function rowToDriveFile(row: IndexRow): DriveFile {
   return {
@@ -84,10 +220,7 @@ export function rowToDriveFile(row: IndexRow): DriveFile {
   };
 }
 
-export function driveFileToRow(
-  file: DriveFile,
-  isFolderMarker = false,
-): IndexRow {
+export function driveFileToRow(file: DriveFile, isFolderMarker = false): IndexRow {
   return {
     id: file.id,
     name: file.name,
@@ -102,8 +235,10 @@ export function driveFileToRow(
   };
 }
 
-export function replaceAllIndex(rows: IndexRow[]) {
-  const database = getDb();
+// ---------- write ----------
+
+function replaceAllIndexSqlite(rows: IndexRow[]) {
+  const database = sqliteDb!;
   database.exec("BEGIN");
   try {
     database.prepare("DELETE FROM files").run();
@@ -134,100 +269,149 @@ export function replaceAllIndex(rows: IndexRow[]) {
   }
 }
 
+export function replaceAllIndex(rows: IndexRow[]) {
+  if (ensureBackend() === "sqlite") {
+    replaceAllIndexSqlite(rows);
+    return;
+  }
+  const store = loadJsonStore();
+  store.files = rows.slice();
+  saveJsonStore(store);
+}
+
 export function upsertIndexRow(row: IndexRow) {
-  getDb()
-    .prepare(
-      `
-    INSERT INTO files (
-      id, name, size, mime_type, kind, folder,
-      created_time, last_edited_time, url, is_folder_marker
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      size = excluded.size,
-      mime_type = excluded.mime_type,
-      kind = excluded.kind,
-      folder = excluded.folder,
-      created_time = excluded.created_time,
-      last_edited_time = excluded.last_edited_time,
-      url = excluded.url,
-      is_folder_marker = excluded.is_folder_marker
-  `,
-    )
-    .run(
-      row.id,
-      row.name,
-      row.size,
-      row.mime_type,
-      row.kind,
-      row.folder,
-      row.created_time,
-      row.last_edited_time,
-      row.url,
-      row.is_folder_marker,
-    );
+  if (ensureBackend() === "sqlite") {
+    sqliteDb!
+      .prepare(
+        `
+      INSERT INTO files (
+        id, name, size, mime_type, kind, folder,
+        created_time, last_edited_time, url, is_folder_marker
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        size = excluded.size,
+        mime_type = excluded.mime_type,
+        kind = excluded.kind,
+        folder = excluded.folder,
+        created_time = excluded.created_time,
+        last_edited_time = excluded.last_edited_time,
+        url = excluded.url,
+        is_folder_marker = excluded.is_folder_marker
+    `,
+      )
+      .run(
+        row.id,
+        row.name,
+        row.size,
+        row.mime_type,
+        row.kind,
+        row.folder,
+        row.created_time,
+        row.last_edited_time,
+        row.url,
+        row.is_folder_marker,
+      );
+    return;
+  }
+  const store = loadJsonStore();
+  const i = store.files.findIndex((f) => f.id === row.id);
+  if (i >= 0) store.files[i] = row;
+  else store.files.push(row);
+  saveJsonStore(store);
 }
 
 export function deleteIndexRow(id: string) {
-  getDb().prepare("DELETE FROM files WHERE id = ?").run(id);
+  if (ensureBackend() === "sqlite") {
+    sqliteDb!.prepare("DELETE FROM files WHERE id = ?").run(id);
+    return;
+  }
+  const store = loadJsonStore();
+  store.files = store.files.filter((f) => f.id !== id);
+  saveJsonStore(store);
+}
+
+// ---------- read ----------
+
+function sortByCreatedDesc(a: IndexRow, b: IndexRow) {
+  return (b.created_time || "").localeCompare(a.created_time || "");
 }
 
 export function listIndexFiles(folder: string, query?: string): DriveFile[] {
-  const f = folder;
-  const q = query?.trim();
-  let rows: IndexRow[];
-
-  if (q) {
-    // 搜索：当前目录及所有子目录中文件名匹配
-    if (f === "/") {
-      rows = getDb()
-        .prepare(
-          `
-        SELECT * FROM files
-        WHERE is_folder_marker = 0 AND name LIKE ?
-        ORDER BY created_time DESC
-      `,
-        )
-        .all(`%${q}%`) as IndexRow[];
+  if (ensureBackend() === "sqlite") {
+    const f = folder;
+    const q = query?.trim();
+    let rows: IndexRow[];
+    if (q) {
+      if (f === "/") {
+        rows = sqliteDb!
+          .prepare(
+            `
+          SELECT * FROM files
+          WHERE is_folder_marker = 0 AND name LIKE ?
+          ORDER BY created_time DESC
+        `,
+          )
+          .all(`%${q}%`) as IndexRow[];
+      } else {
+        rows = sqliteDb!
+          .prepare(
+            `
+          SELECT * FROM files
+          WHERE is_folder_marker = 0
+            AND name LIKE ?
+            AND (folder = ? OR folder LIKE ?)
+          ORDER BY created_time DESC
+        `,
+          )
+          .all(`%${q}%`, f, `${f}/%`) as IndexRow[];
+      }
     } else {
-      rows = getDb()
+      rows = sqliteDb!
         .prepare(
           `
         SELECT * FROM files
-        WHERE is_folder_marker = 0
-          AND name LIKE ?
-          AND (folder = ? OR folder LIKE ?)
+        WHERE folder = ? AND is_folder_marker = 0
         ORDER BY created_time DESC
       `,
         )
-        .all(`%${q}%`, f, `${f}/%`) as IndexRow[];
+        .all(f) as IndexRow[];
     }
-  } else {
-    rows = getDb()
-      .prepare(
-        `
-      SELECT * FROM files
-      WHERE folder = ? AND is_folder_marker = 0
-      ORDER BY created_time DESC
-    `,
-      )
-      .all(f) as IndexRow[];
+    return rows.map(rowToDriveFile);
   }
-  return rows.map(rowToDriveFile);
+
+  const store = loadJsonStore();
+  const f = folder;
+  const q = query?.trim().toLowerCase();
+  let rows = store.files.filter((r) => r.is_folder_marker === 0);
+  if (q) {
+    rows = rows.filter((r) => {
+      if (!r.name.toLowerCase().includes(q)) return false;
+      if (f === "/") return true;
+      return r.folder === f || r.folder.startsWith(`${f}/`);
+    });
+  } else {
+    rows = rows.filter((r) => r.folder === f);
+  }
+  return rows.sort(sortByCreatedDesc).map(rowToDriveFile);
 }
 
 export function listIndexSubfolders(folder: string, query?: string): string[] {
   const set = new Set<string>();
   const prefix = folder === "/" ? "/" : `${folder}/`;
   const q = query?.trim().toLowerCase();
-  const rows = getDb()
-    .prepare(`SELECT DISTINCT folder FROM files`)
-    .all() as Array<{ folder: string }>;
 
-  for (const row of rows) {
-    const f = row.folder || "/";
+  let folders: string[] = [];
+  if (ensureBackend() === "sqlite") {
+    folders = (
+      sqliteDb!.prepare(`SELECT DISTINCT folder FROM files`).all() as Array<{ folder: string }>
+    ).map((r) => r.folder || "/");
+  } else {
+    folders = loadJsonStore().files.map((r) => r.folder || "/");
+  }
+
+  for (const f of folders) {
     let child: string | null = null;
-
     if (folder === "/") {
       if (f !== "/" && f.startsWith("/")) {
         child = f.split("/").filter(Boolean)[0] || null;
@@ -235,9 +419,7 @@ export function listIndexSubfolders(folder: string, query?: string): string[] {
     } else if (f !== folder && f.startsWith(prefix)) {
       child = f.slice(prefix.length).split("/").filter(Boolean)[0] || null;
     }
-
     if (!child) continue;
-    // 搜索时只保留名称匹配的文件夹
     if (q && !child.toLowerCase().includes(q)) continue;
     set.add(child);
   }
@@ -247,12 +429,16 @@ export function listIndexSubfolders(folder: string, query?: string): string[] {
 
 export function listIndexAllFolders(): string[] {
   const set = new Set<string>(["/"]);
-  const rows = getDb()
-    .prepare(`SELECT DISTINCT folder FROM files`)
-    .all() as Array<{ folder: string }>;
+  let folders: string[] = [];
+  if (ensureBackend() === "sqlite") {
+    folders = (
+      sqliteDb!.prepare(`SELECT DISTINCT folder FROM files`).all() as Array<{ folder: string }>
+    ).map((r) => r.folder || "/");
+  } else {
+    folders = loadJsonStore().files.map((r) => r.folder || "/");
+  }
 
-  for (const row of rows) {
-    const f = row.folder || "/";
+  for (const f of folders) {
     set.add(f);
     if (f !== "/") {
       const parts = f.split("/").filter(Boolean);
@@ -272,6 +458,39 @@ export function listIndexAllFolders(): string[] {
 }
 
 export function indexCount(): number {
-  const row = getDb().prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number };
-  return row.c;
+  if (ensureBackend() === "sqlite") {
+    const row = sqliteDb!.prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number };
+    return row.c;
+  }
+  return loadJsonStore().files.length;
+}
+
+export function exportIndexJson(): string {
+  if (ensureBackend() === "sqlite") {
+    const files = sqliteDb!.prepare("SELECT * FROM files").all() as IndexRow[];
+    const metaRows = sqliteDb!.prepare("SELECT key, value FROM meta").all() as Array<{
+      key: string;
+      value: string;
+    }>;
+    const meta: Record<string, string> = {};
+    for (const m of metaRows) meta[m.key] = m.value;
+    return JSON.stringify({ version: 1, meta, files });
+  }
+  return JSON.stringify(loadJsonStore());
+}
+
+export function importIndexJson(text: string) {
+  const raw = JSON.parse(text) as Partial<IndexStore>;
+  const files = Array.isArray(raw.files) ? raw.files : [];
+  const meta = raw.meta && typeof raw.meta === "object" ? raw.meta : {};
+
+  closeDb();
+  if (ensureBackend() === "sqlite") {
+    replaceAllIndexSqlite(files);
+    for (const [k, v] of Object.entries(meta)) {
+      setMetaSqlite(k, v);
+    }
+    return;
+  }
+  saveJsonStore({ version: 1, meta, files });
 }

@@ -19,10 +19,14 @@ const DEFAULT_CONFIG: AppConfig = {
   updatedAt: null,
 };
 
-function configPath() {
-  const dir = path.join(process.cwd(), "data");
+function dataDir() {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, "app-config.json");
+  return dir;
+}
+
+function configPath() {
+  return path.join(dataDir(), "app-config.json");
 }
 
 export function readAppConfig(): AppConfig {

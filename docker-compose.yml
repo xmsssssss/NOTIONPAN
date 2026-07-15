@@ -1,0 +1,48 @@
+# NotionPan Docker Compose
+# 用法：
+#   1. cp .env.example .env   （可先只填 SESSION_SECRET，Notion 也可网页里配）
+#   2. docker compose up -d --build
+#   3. 浏览器 http://服务器IP:3000
+
+services:
+  notionpan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notionpan:latest
+    container_name: notionpan
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - DOCKER=1
+      - DATA_DIR=/app/data
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      # 会话密钥：务必改成随机长串（≥32）
+      - SESSION_SECRET=${SESSION_SECRET:-please-change-me-to-a-long-random-string-32chars}
+      # 纯 HTTP / 公网 IP 用 0；HTTPS 反代后改为 1
+      - COOKIE_SECURE=${COOKIE_SECURE:-0}
+      # 可选：启动时注入 Notion（也可首次登录后在网页后台填写，写入 data/.env.local）
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
+      - NOTION_DATA_SOURCE_ID=${NOTION_DATA_SOURCE_ID:-}
+    volumes:
+      # 持久化：账号、索引、分享、缩略图、后台保存的 env
+      - notionpan-data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/auth/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  notionpan-data:

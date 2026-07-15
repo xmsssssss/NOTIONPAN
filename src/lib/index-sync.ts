@@ -1,6 +1,7 @@
 import type { Client } from "@notionhq/client";
 import {
   driveFileToRow,
+  getIndexBackend,
   getMeta,
   indexCount,
   replaceAllIndex,
@@ -116,7 +117,7 @@ export async function fullSyncFromNotion(
   }
 }
 
-/** 进程内首次列表前全量同步；之后读 SQLite */
+/** 有本地索引则优先读缓存；仅空库或 force 时全量同步 Notion */
 export async function ensureIndexReady(
   notion: Client,
   queryPages: (
@@ -130,26 +131,49 @@ export async function ensureIndexReady(
   const count = indexCount();
   const last = getMeta("last_sync_at");
 
-  if (!force && bootstrapped && count > 0 && last) {
+  // 已有本地数据且非强制刷新 → 直接用缓存（进程重启也一样）
+  if (!force && count > 0) {
+    bootstrapped = true;
     return { fromCache: true, syncedAt: last, count };
   }
 
-  // 冷启动或空库：强制全量
-  if (force || !bootstrapped || count === 0 || !last) {
+  // 空库或 force：全量同步；失败时若已有缓存则降级用缓存
+  try {
     const res = await fullSyncFromNotion(notion, queryPages);
     bootstrapped = true;
     return { fromCache: false, syncedAt: res.syncedAt, count: res.count };
+  } catch (e) {
+    const fallbackCount = indexCount();
+    if (fallbackCount > 0) {
+      bootstrapped = true;
+      return {
+        fromCache: true,
+        syncedAt: getMeta("last_sync_at"),
+        count: fallbackCount,
+      };
+    }
+    throw e;
   }
-
-  bootstrapped = true;
-  return { fromCache: true, syncedAt: last, count };
 }
 
 export function getIndexSyncMeta() {
-  return {
-    lastSyncAt: getMeta("last_sync_at"),
-    lastSyncCount: Number(getMeta("last_sync_count") || "0"),
-    count: indexCount(),
-    bootstrapped,
-  };
+  try {
+    return {
+      lastSyncAt: getMeta("last_sync_at"),
+      lastSyncCount: Number(getMeta("last_sync_count") || "0"),
+      count: indexCount(),
+      bootstrapped,
+      backend: getIndexBackend(),
+      error: null as string | null,
+    };
+  } catch (e) {
+    return {
+      lastSyncAt: null,
+      lastSyncCount: 0,
+      count: 0,
+      bootstrapped: false,
+      backend: null as string | null,
+      error: e instanceof Error ? e.message : "本地索引不可用",
+    };
+  }
 }

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DriveApp } from "./DriveApp";
-import { LoginPage } from "./LoginPage";
+import { LoginPage, type LoginSuccessPayload } from "./LoginPage";
 import { AdminPage } from "./AdminPage";
 import { EnvSetupPage } from "./EnvSetupPage";
 
@@ -24,36 +24,68 @@ export function AuthShell() {
   const [view, setView] = useState<"app" | "admin" | "env">("app");
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setError(null);
     try {
-      const res = await fetch("/api/auth/status");
+      const res = await fetch("/api/auth/status", { credentials: "include", cache: "no-store" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "状态获取失败");
       setStatus(data);
       if (typeof document !== "undefined" && data.siteTitle) {
         document.title = data.siteTitle;
       }
-      // 已登录但缺 Notion 配置 → 强制引导配置
-      if (data.isLoggedIn && !data.hasNotionConfig && view === "app") {
-        setView("env");
+      if (data.isLoggedIn && !data.hasNotionConfig) {
+        setView((v) => (v === "admin" ? v : "env"));
+      } else if (data.isLoggedIn && data.hasNotionConfig) {
+        setView((v) => (v === "env" ? "app" : v));
       }
-      if (data.isLoggedIn && data.hasNotionConfig && view === "env") {
-        setView("app");
-      }
+      return data as AuthStatus;
     } catch (e) {
       setError(e instanceof Error ? e.message : "无法连接服务");
+      return null;
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
-  if (loading) {
+  const onLoginSuccess = async (payload?: LoginSuccessPayload) => {
+    // 先用登录接口返回的数据立刻切界面，避免 Cookie 尚未生效时 status 仍显示未登录
+    if (payload?.isLoggedIn) {
+      setStatus((prev) => ({
+        setupCompleted: payload.setupCompleted ?? prev?.setupCompleted ?? true,
+        siteTitle: payload.siteTitle || prev?.siteTitle || "NotionPan",
+        siteDescription: payload.siteDescription || prev?.siteDescription || "",
+        username: payload.username || payload.sessionUser || prev?.username || "",
+        isLoggedIn: true,
+        sessionUser: payload.sessionUser || payload.username || null,
+        hasApiKey: prev?.hasApiKey,
+        hasDatabaseId: prev?.hasDatabaseId,
+        hasNotionConfig: prev?.hasNotionConfig,
+      }));
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
+    // 再拉一次完整状态（含 hasNotionConfig）
+    const data = await refresh();
+    if (data?.isLoggedIn && !data.hasNotionConfig) {
+      setView("env");
+    } else if (data?.isLoggedIn) {
+      setView("app");
+    } else if (payload?.isLoggedIn) {
+      // Cookie 可能因 Secure 未写入：提示并硬刷新一次
+      setError(
+        "登录成功但会话未生效（常见于 production + HTTP）。请设置 COOKIE_SECURE=0 后重启，或使用 HTTPS。",
+      );
+    }
+  };
+
+  if (loading && !status) {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-500">
         <div className="flex flex-col items-center gap-3">
@@ -64,7 +96,7 @@ export function AuthShell() {
     );
   }
 
-  if (error) {
+  if (error && !status?.isLoggedIn) {
     return (
       <div className="flex min-h-screen items-center justify-center p-6">
         <div className="max-w-md rounded-2xl border border-red-200 bg-red-50 p-6 text-center text-red-700">
@@ -90,9 +122,8 @@ export function AuthShell() {
       <LoginPage
         setupMode={!status.setupCompleted}
         siteTitle={status.siteTitle}
-        onSuccess={() => {
-          setLoading(true);
-          void refresh();
+        onSuccess={(data) => {
+          void onLoginSuccess(data);
         }}
       />
     );
@@ -106,7 +137,7 @@ export function AuthShell() {
         onBack={() => setView(status.hasNotionConfig ? "app" : "env")}
         onChanged={() => void refresh()}
         onLogout={async () => {
-          await fetch("/api/auth/logout", { method: "POST" });
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
           setView("app");
           setLoading(true);
           void refresh();
@@ -115,13 +146,11 @@ export function AuthShell() {
     );
   }
 
-  // 已登录但没有 Notion env → 引导配置
   if (!status.hasNotionConfig || view === "env") {
     return (
       <EnvSetupPage
         siteTitle={status.siteTitle}
         onSuccess={() => {
-          setLoading(true);
           setView("app");
           void refresh();
         }}
@@ -131,16 +160,21 @@ export function AuthShell() {
   }
 
   return (
-    <DriveApp
-      siteTitle={status.siteTitle}
-      siteDescription={status.siteDescription}
-      username={status.sessionUser || status.username}
-      onOpenAdmin={() => setView("admin")}
-      onLogout={async () => {
-        await fetch("/api/auth/logout", { method: "POST" });
-        setLoading(true);
-        void refresh();
-      }}
-    />
+    <div className="h-full w-full sm:h-auto sm:min-h-screen">
+      {error && (
+        <div className="bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{error}</div>
+      )}
+      <DriveApp
+        siteTitle={status.siteTitle}
+        siteDescription={status.siteDescription}
+        username={status.sessionUser || status.username}
+        onOpenAdmin={() => setView("admin")}
+        onLogout={async () => {
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+          setLoading(true);
+          void refresh();
+        }}
+      />
+    </div>
   );
 }

@@ -7,6 +7,11 @@ export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+/**
+ * 登录态下载：
+ * - 默认 302 到 Notion 签名 URL（自用，省带宽）
+ * - ?proxy=1 时服务端反代（仅用于文本预览等需同源读 body 的场景）
+ */
 export async function GET(req: NextRequest, ctx: Ctx) {
   return withAuth(async () => {
     const { id } = await ctx.params;
@@ -16,8 +21,8 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: "文件暂无下载链接" }, { status: 404 });
     }
 
-    const redirect = req.nextUrl.searchParams.get("redirect") === "1";
-    if (redirect) {
+    const useProxy = req.nextUrl.searchParams.get("proxy") === "1";
+    if (!useProxy) {
       return NextResponse.redirect(file.downloadUrl);
     }
 
@@ -33,7 +38,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     );
     headers.set(
       "Content-Disposition",
-      `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
     );
     const len = upstream.headers.get("content-length");
     if (len) headers.set("Content-Length", len);

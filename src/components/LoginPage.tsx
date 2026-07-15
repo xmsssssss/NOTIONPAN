@@ -2,6 +2,15 @@
 
 import { useState } from "react";
 
+export type LoginSuccessPayload = {
+  isLoggedIn: boolean;
+  siteTitle?: string;
+  siteDescription?: string;
+  username?: string;
+  sessionUser?: string | null;
+  setupCompleted?: boolean;
+};
+
 export function LoginPage({
   setupMode,
   siteTitle,
@@ -9,7 +18,7 @@ export function LoginPage({
 }: {
   setupMode: boolean;
   siteTitle: string;
-  onSuccess: () => void;
+  onSuccess: (data?: LoginSuccessPayload) => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -29,11 +38,20 @@ export function LoginPage({
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "操作失败");
-      onSuccess();
+      // 把登录结果交给上层，避免仅依赖立刻再请求 status（Cookie 偶发未写入时卡在登录页）
+      onSuccess({
+        isLoggedIn: true,
+        siteTitle: data.siteTitle,
+        siteDescription: data.siteDescription,
+        username: data.username || data.sessionUser || username,
+        sessionUser: data.sessionUser || username,
+        setupCompleted: data.setupCompleted ?? true,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "失败");
     } finally {
@@ -42,9 +60,9 @@ export function LoginPage({
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
+    <div className="safe-top safe-bottom flex min-h-screen min-h-[100dvh] items-center justify-center p-3 sm:p-4">
       <div className="w-full max-w-md overflow-hidden rounded-3xl border border-white/50 bg-white/90 shadow-2xl shadow-sky-500/10 backdrop-blur">
-        <div className="bg-gradient-to-r from-sky-500 via-blue-500 to-teal-400 px-6 py-8 text-white">
+        <div className="bg-gradient-to-r from-sky-500 via-blue-500 to-teal-400 px-5 py-7 text-white sm:px-6 sm:py-8">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/20 text-xl font-bold backdrop-blur">
             N
           </div>
@@ -54,7 +72,7 @@ export function LoginPage({
           </p>
         </div>
 
-        <form onSubmit={(e) => void submit(e)} className="space-y-4 px-6 py-6">
+        <form onSubmit={(e) => void submit(e)} className="space-y-4 px-5 py-5 sm:px-6 sm:py-6">
           {setupMode && (
             <label className="block space-y-1.5">
               <span className="text-sm font-medium text-slate-700">网站标题</span>
@@ -102,7 +120,7 @@ export function LoginPage({
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-xl bg-gradient-to-r from-sky-500 to-teal-400 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-500/25 transition hover:brightness-105 disabled:opacity-60"
+            className="w-full rounded-xl bg-gradient-to-r from-sky-500 to-teal-400 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-sky-500/25 transition hover:brightness-105 disabled:opacity-60 sm:py-2.5"
           >
             {busy ? "处理中…" : setupMode ? "完成设置并进入" : "登录"}
           </button>

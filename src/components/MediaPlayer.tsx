@@ -97,12 +97,13 @@ export function MediaPlayer({
   return (
     <div
       ref={shellRef}
-      className={`relative w-full overflow-hidden ${kind === "video" ? "max-h-full max-w-5xl" : "max-w-xl"}`}
+      className={`relative w-full overflow-hidden ${kind === "video" ? "h-full max-h-full max-w-5xl" : "max-w-xl"}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      onTouchStart={() => setHover(true)}
     >
       {kind === "video" ? (
-        <div className="relative aspect-video h-full max-h-full w-full overflow-hidden rounded-3xl bg-slate-950 shadow-2xl ring-1 ring-white/10">
+        <div className="relative aspect-video h-full max-h-full w-full overflow-hidden bg-slate-950 sm:rounded-3xl sm:shadow-2xl sm:ring-1 sm:ring-white/10">
           <video
             ref={setMediaRef as React.RefCallback<HTMLVideoElement>}
             src={src}
@@ -129,16 +130,16 @@ export function MediaPlayer({
               onClick={() => void togglePlay()}
               className="absolute inset-0 flex items-center justify-center bg-black/20"
             >
-              <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/95 text-slate-800 shadow-xl transition hover:scale-105">
-                <svg className="ml-1 h-7 w-7" viewBox="0 0 24 24" fill="currentColor">
+              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/95 text-slate-800 shadow-xl transition active:scale-95 sm:h-16 sm:w-16 hover:scale-105">
+                <svg className="ml-1 h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               </span>
             </button>
           )}
           <div
-            className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 pb-3 pt-10 transition ${
-              hover || !playing ? "opacity-100" : "opacity-0"
+            className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-12 transition sm:px-4 sm:pb-3 sm:pt-10 ${
+              hover || !playing ? "opacity-100" : "opacity-100 sm:opacity-0"
             }`}
           >
             <Controls
@@ -169,15 +170,15 @@ export function MediaPlayer({
             <div className="absolute -left-10 -top-10 h-40 w-40 rounded-full bg-sky-300/30 blur-3xl" />
             <div className="absolute -bottom-12 -right-8 h-44 w-44 rounded-full bg-teal-300/30 blur-3xl" />
 
-            <div className="relative px-6 pb-5 pt-8">
-              <div className="mb-6 flex flex-col items-center text-center">
-                <div className="relative mb-5">
+            <div className="relative px-4 pb-4 pt-6 sm:px-6 sm:pb-5 sm:pt-8">
+              <div className="mb-5 flex flex-col items-center text-center sm:mb-6">
+                <div className="relative mb-4 sm:mb-5">
                   <div
-                    className={`flex h-28 w-28 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-sky-500 to-teal-400 text-white shadow-xl shadow-sky-500/30 ${
+                    className={`flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-sky-500 to-teal-400 text-white shadow-xl shadow-sky-500/30 sm:h-28 sm:w-28 ${
                       playing ? "animate-pulse" : ""
                     }`}
                   >
-                    <svg className="h-12 w-12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <svg className="h-9 w-9 sm:h-12 sm:w-12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                       <path d="M9 18V5l12-2v13" />
                       <circle cx="6" cy="18" r="3" />
                       <circle cx="18" cy="16" r="3" />
@@ -304,20 +305,24 @@ function Controls({
     <div className={`space-y-2 ${text}`}>
       <div
         ref={barRef}
-        className={`group relative h-1.5 cursor-pointer rounded-full ${track}`}
+        className={`group relative h-2 cursor-pointer rounded-full sm:h-1.5 ${track}`}
         onClick={(e) => onSeek(e.clientX)}
+        onTouchEnd={(e) => {
+          const t = e.changedTouches[0];
+          if (t) onSeek(t.clientX);
+        }}
       >
         <div className={`absolute inset-y-0 left-0 rounded-full ${fill}`} style={{ width: `${progress}%` }} />
         <div
-          className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-white opacity-0 shadow ring-2 ring-sky-400/40 transition group-hover:opacity-100"
+          className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-white opacity-100 shadow ring-2 ring-sky-400/40 transition sm:opacity-0 sm:group-hover:opacity-100"
           style={{ left: `calc(${progress}% - 7px)` }}
         />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <button
           onClick={onTogglePlay}
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition ${
+          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition sm:h-9 sm:w-9 ${
             light
               ? "bg-gradient-to-br from-sky-500 to-teal-400 text-white shadow-md shadow-sky-500/30 hover:brightness-105"
               : "bg-white/15 hover:bg-white/25"
@@ -337,14 +342,14 @@ function Controls({
           )}
         </button>
 
-        <span className={`min-w-[88px] text-xs tabular-nums ${mutedText}`}>
+        <span className={`min-w-0 flex-1 text-[11px] tabular-nums sm:min-w-[88px] sm:flex-none sm:text-xs ${mutedText}`}>
           {formatTime(current)} / {formatTime(duration)}
         </span>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1 sm:gap-2">
           <button
             onClick={onMute}
-            className={`rounded-lg p-1.5 transition ${light ? "hover:bg-slate-200/80" : "hover:bg-white/15"}`}
+            className={`rounded-lg p-2 transition sm:p-1.5 ${light ? "hover:bg-slate-200/80" : "hover:bg-white/15"}`}
             title={muted ? "取消静音" : "静音"}
           >
             {muted || volume === 0 ? (
@@ -366,12 +371,12 @@ function Controls({
             step={0.01}
             value={muted ? 0 : volume}
             onChange={(e) => onVolume(Number(e.target.value))}
-            className="h-1 w-16 cursor-pointer accent-sky-500 sm:w-20"
+            className="hidden h-1 w-14 cursor-pointer accent-sky-500 sm:block sm:w-20"
             title="音量"
           />
           <button
             onClick={onRate}
-            className={`rounded-lg px-2 py-1 text-xs font-medium tabular-nums transition ${
+            className={`rounded-lg px-2.5 py-1.5 text-xs font-medium tabular-nums transition sm:px-2 sm:py-1 ${
               light ? "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100" : "bg-white/15 hover:bg-white/25"
             }`}
             title="倍速"
@@ -381,7 +386,7 @@ function Controls({
           {kind === "video" && onFullscreen && (
             <button
               onClick={onFullscreen}
-              className="rounded-lg p-1.5 transition hover:bg-white/15"
+              className="rounded-lg p-2 transition hover:bg-white/15 sm:p-1.5"
               title="全屏"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
