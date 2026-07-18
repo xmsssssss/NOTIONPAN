@@ -62,6 +62,8 @@
 <summary><b>Docker</b> — 推荐</summary>
 
 ```bash
+git clone https://github.com/xmsssssss/NOTIONPAN.git
+cd NOTIONPAN
 cp .env.example .env
 # 上线前请修改 SESSION_SECRET
 
@@ -80,6 +82,8 @@ docker compose up -d --build
 <summary><b>源码运行</b> — Node.js 22+</summary>
 
 ```bash
+git clone https://github.com/xmsssssss/NOTIONPAN.git
+cd NOTIONPAN
 npm install
 cp .env.example .env.local
 npm run dev          # → http://localhost:3000
