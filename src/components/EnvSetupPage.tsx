@@ -16,7 +16,7 @@ export function EnvSetupPage({
   const [dataSourceId, setDataSourceId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,8 +24,9 @@ export function EnvSetupPage({
     setError(null);
     try {
       if (!apiKey.trim()) throw new Error("请填写 NOTION_API_KEY");
-      if (!databaseId.trim() || databaseId.replace(/-/g, "").length < 32) {
-        throw new Error("请填写正确的 Database ID（约 32 位字符）");
+      const dbRaw = databaseId.trim().replace(/\s/g, "");
+      if (dbRaw && dbRaw.replace(/-/g, "").length < 32) {
+        throw new Error("Database ID 格式不正确（约 32 位字符），或留空稍后自动建库");
       }
 
       const res = await fetch("/api/admin/settings", {
@@ -34,13 +35,30 @@ export function EnvSetupPage({
         body: JSON.stringify({
           env: {
             NOTION_API_KEY: apiKey.trim(),
-            NOTION_DATABASE_ID: databaseId.trim().replace(/\s/g, ""),
-            NOTION_DATA_SOURCE_ID: dataSourceId.trim(),
+            ...(dbRaw
+              ? {
+                  NOTION_DATABASE_ID: dbRaw,
+                  NOTION_DATA_SOURCE_ID: dataSourceId.trim(),
+                }
+              : {}),
           },
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "保存失败");
+
+      // 有 Database ID 时尝试自动补全缺失属性
+      if (dbRaw) {
+        try {
+          await fetch("/api/admin/schema", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "repair" }),
+          });
+        } catch {
+          // ignore
+        }
+      }
       // 配置已写入；进入网盘时再同步索引
       onSuccess();
     } catch (err) {
@@ -51,7 +69,7 @@ export function EnvSetupPage({
   };
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-8 sm:px-6">
+    <div className="mx-auto flex h-[100dvh] max-h-[100dvh] max-w-3xl flex-col overflow-y-auto overscroll-contain px-4 py-8 sm:px-6">
       <div className="mb-6">
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-600">
           首次配置
@@ -66,7 +84,8 @@ export function EnvSetupPage({
         {[
           { n: 1 as const, t: "获取 API Key" },
           { n: 2 as const, t: "建库并授权" },
-          { n: 3 as const, t: "填写配置" },
+          { n: 3 as const, t: "获取 Database ID" },
+          { n: 4 as const, t: "填写配置" },
         ].map((s) => (
           <button
             key={s.n}
@@ -118,7 +137,7 @@ export function EnvSetupPage({
               </li>
             </ol>
             <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">
-              本步复制的令牌，将在第 3 步填入 <code className="rounded bg-white px-1">NOTION_API_KEY</code>
+              本步复制的令牌，将在第 4 步填入 <code className="rounded bg-white px-1">NOTION_API_KEY</code>
             </div>
             <div className="mt-4 flex justify-end">
               <button
@@ -199,18 +218,48 @@ export function EnvSetupPage({
         )}
 
         {step === 3 && (
-          <Card title="③ 获取 Database ID 并填写配置">
-            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
-              <p className="mb-1 font-medium text-slate-800">NOTION_DATABASE_ID 获取：</p>
-              <p className="mb-2 text-xs">打开数据库页面，看浏览器地址栏，例如：</p>
-              <pre className="overflow-x-auto rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-sky-100">
+          <Card title="③ 获取 Database ID">
+            <ol className="list-decimal space-y-2.5 pl-5 text-sm leading-relaxed text-slate-600">
+              <li>打开第 2 步创建的数据库页面</li>
+              <li>
+                看浏览器地址栏，例如：
+                <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-sky-100">
 {`https://app.notion.com/p/xxxxxxxxxxxxxxxxxxxx?v=39d72c34808b844f00
                          ↑
               这一段 32 位字符 = NOTION_DATABASE_ID
               （不要用 ?v= 后面的视图 ID）`}
-              </pre>
+                </pre>
+              </li>
+              <li>
+                复制 <code className="rounded bg-slate-100 px-1">/p/</code> 后面那串约 32
+                位字符（可带或不带连字符）
+              </li>
+            </ol>
+            <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+              本步复制的 ID，将在第 4 步填入{" "}
+              <code className="rounded bg-white px-1">NOTION_DATABASE_ID</code>
             </div>
+            <div className="mt-4 flex justify-between">
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              >
+                上一步
+              </button>
+              <button
+                type="button"
+                onClick={() => setStep(4)}
+                className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-white"
+              >
+                下一步
+              </button>
+            </div>
+          </Card>
+        )}
 
+        {step === 4 && (
+          <Card title="④ 填写配置">
             <form onSubmit={(e) => void save(e)} className="space-y-4">
               <label className="block space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
@@ -229,18 +278,26 @@ export function EnvSetupPage({
 
               <label className="block space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
-                  NOTION_DATABASE_ID <span className="text-red-500">*</span>
-                  <span className="ml-2 text-xs font-normal text-slate-400">（数据库网址中的 32 位字符）</span>
+                  NOTION_DATABASE_ID
+                  <span className="ml-2 text-xs font-normal text-slate-400">
+                    （有则填；无则保存后后台「自动建库」）
+                  </span>
                 </span>
                 <input
                   value={databaseId}
                   onChange={(e) => setDatabaseId(e.target.value)}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-mono text-sm outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                  placeholder="32 位 ID，可带或不带连字符"
-                  required
+                  placeholder="32 位 ID，可留空"
                   autoComplete="off"
                 />
               </label>
+
+              <div className="rounded-xl border border-dashed border-sky-200 bg-sky-50/60 px-3 py-2.5 text-xs text-slate-600">
+                <p className="font-medium text-sky-800">还没有数据库？</p>
+                <p className="mt-1">
+                  可先只填 API Key，保存后到后台「索引同步」点「自动建库」；已有库但缺列可点「修复 Schema」。
+                </p>
+              </div>
 
               <label className="block space-y-1.5">
                 <span className="text-sm font-medium text-slate-700">
@@ -265,7 +322,7 @@ export function EnvSetupPage({
               <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setStep(2)}
+                  onClick={() => setStep(3)}
                   className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
                 >
                   上一步

@@ -337,6 +337,49 @@ function sortByCreatedDesc(a: IndexRow, b: IndexRow) {
   return (b.created_time || "").localeCompare(a.created_time || "");
 }
 
+/** 同目录下是否已有同名（可选再比大小）的文件 */
+export function findIndexFileByName(
+  folder: string,
+  name: string,
+  size?: number,
+): DriveFile | null {
+  const f = folder;
+  const n = name;
+  if (ensureBackend() === "sqlite") {
+    if (typeof size === "number" && Number.isFinite(size)) {
+      const row = sqliteDb!
+        .prepare(
+          `
+          SELECT * FROM files
+          WHERE folder = ? AND is_folder_marker = 0 AND name = ? AND size = ?
+          LIMIT 1
+        `,
+        )
+        .get(f, n, size) as IndexRow | undefined;
+      return row ? rowToDriveFile(row) : null;
+    }
+    const row = sqliteDb!
+      .prepare(
+        `
+        SELECT * FROM files
+        WHERE folder = ? AND is_folder_marker = 0 AND name = ?
+        LIMIT 1
+      `,
+      )
+      .get(f, n) as IndexRow | undefined;
+    return row ? rowToDriveFile(row) : null;
+  }
+
+  const store = loadJsonStore();
+  const hit = store.files.find((r) => {
+    if (r.is_folder_marker !== 0) return false;
+    if (r.folder !== f || r.name !== n) return false;
+    if (typeof size === "number" && Number.isFinite(size) && r.size !== size) return false;
+    return true;
+  });
+  return hit ? rowToDriveFile(hit) : null;
+}
+
 export function listIndexFiles(folder: string, query?: string): DriveFile[] {
   if (ensureBackend() === "sqlite") {
     const f = folder;

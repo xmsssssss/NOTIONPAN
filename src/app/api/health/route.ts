@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { ensureDatabaseSchema, getSyncStatus } from "@/lib/drive";
+import { ensureDatabaseSchema, getSyncStatus, getUploadLimitInfo } from "@/lib/drive";
 import { getRuntimeEnv, ensureRuntimeEnvLoaded } from "@/lib/runtime-env";
 import { requireSession, AuthError } from "@/lib/session";
 import { readAppConfig } from "@/lib/app-config";
+import { formatBytes } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,15 +21,32 @@ export async function GET() {
       });
     }
     await requireSession();
-    const schema = await ensureDatabaseSchema();
+    const schema = await ensureDatabaseSchema({ repair: false });
     const index = getSyncStatus();
+    let uploadLimit: {
+      maxFileUploadSizeInBytes: number;
+      maxLabel: string;
+      workspaceName: string | null;
+    } | null = null;
+    try {
+      const lim = await getUploadLimitInfo();
+      uploadLimit = {
+        maxFileUploadSizeInBytes: lim.maxFileUploadSizeInBytes,
+        maxLabel: formatBytes(lim.maxFileUploadSizeInBytes),
+        workspaceName: lim.workspaceName,
+      };
+    } catch {
+      uploadLimit = null;
+    }
     return NextResponse.json({
       ok: schema.ok,
       message: schema.message,
       properties: schema.properties,
+      missing: schema.missing,
       hasApiKey: Boolean(getRuntimeEnv("NOTION_API_KEY")),
       hasDatabaseId: Boolean(getRuntimeEnv("NOTION_DATABASE_ID")),
       index,
+      uploadLimit,
     });
   } catch (err) {
     if (err instanceof AuthError) {

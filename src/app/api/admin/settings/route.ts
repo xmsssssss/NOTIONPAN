@@ -41,6 +41,12 @@ export async function PUT(req: NextRequest) {
     if (typeof body.siteDescription === "string") {
       patch.siteDescription = body.siteDescription.trim();
     }
+    if (typeof body.autoPlay === "boolean") {
+      patch.autoPlay = body.autoPlay;
+    }
+    if (typeof body.siteIcon === "string") {
+      patch.siteIcon = body.siteIcon;
+    }
 
     // change username/password
     if (body.username || body.newPassword) {

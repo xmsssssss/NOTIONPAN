@@ -136,7 +136,7 @@ export function SharePage({ token }: { token: string }) {
   const dl = `/api/s/${token}/download`;
 
   return (
-    <div className="safe-top safe-bottom mx-auto min-h-screen min-h-[100dvh] max-w-4xl px-3 py-5 sm:px-4 sm:py-8">
+    <div className="safe-top safe-bottom mx-auto h-[100dvh] max-h-[100dvh] max-w-4xl overflow-y-auto overscroll-contain px-3 py-5 sm:px-4 sm:py-8">
       <div className="mb-4 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-xs font-semibold uppercase tracking-wider text-sky-600">

@@ -7,6 +7,8 @@ const ENV_KEYS = [
   "NOTION_DATA_SOURCE_ID",
   "SESSION_SECRET",
   "COOKIE_SECURE",
+  /** Notion Webhook 订阅校验令牌（verification_token） */
+  "NOTION_WEBHOOK_TOKEN",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
@@ -123,7 +125,11 @@ export function readEnvConfig(): {
     const v = getRuntimeEnv(key) || "";
     values[key] = v;
     if (!v) masked[key] = "";
-    else if (key === "NOTION_API_KEY" || key === "SESSION_SECRET") {
+    else if (
+      key === "NOTION_API_KEY" ||
+      key === "SESSION_SECRET" ||
+      key === "NOTION_WEBHOOK_TOKEN"
+    ) {
       masked[key] = v.length <= 8 ? "****" : `${v.slice(0, 4)}****${v.slice(-4)}`;
     } else {
       masked[key] = v;
@@ -148,7 +154,13 @@ export function writeEnvConfig(input: Record<string, string>): {
     const val = String(input[key] ?? "").trim();
     // empty means keep old for secrets if already set
     if (!val) {
-      if (key === "NOTION_API_KEY" || key === "SESSION_SECRET") continue;
+      if (
+        key === "NOTION_API_KEY" ||
+        key === "SESSION_SECRET" ||
+        key === "NOTION_WEBHOOK_TOKEN"
+      ) {
+        continue;
+      }
       delete current[key];
       delete overrides[key];
       delete process.env[key];

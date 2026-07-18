@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DriveFile } from "@/lib/types";
+import {
+  cueAt,
+  lyricWindow,
+  parseSubtitle,
+  preferredSubtitleId,
+  subtitleLabel,
+  type Cue,
+} from "@/lib/subtitle";
 import { formatBytes } from "@/lib/utils";
 
 function formatTime(sec: number): string {
@@ -12,20 +21,60 @@ function formatTime(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+type SubOption = {
+  id: string;
+  label: string;
+  name: string;
+};
+
+/** once 播完停 | loop 单曲循环 | list 列表循环 */
+export type PlayMode = "once" | "loop" | "list";
+
+const PLAY_MODE_CYCLE: PlayMode[] = ["once", "loop", "list"];
+
+const PLAY_MODE_META: Record<PlayMode, { label: string; title: string }> = {
+  once: { label: "单曲", title: "单曲播放（播完停止）" },
+  loop: { label: "循环", title: "单曲循环" },
+  list: { label: "列表", title: "列表循环" },
+};
+
 export function MediaPlayer({
   src,
   kind,
   title,
   size,
+  subtitleFiles = [],
+  autoPlay = true,
+  /** 为 true 时不渲染 audio 元素（由上层常驻 audio 负责发声） */
+  externalMedia = false,
+  /** 外部 audio 元素，用于同步进度/播放状态 */
+  externalAudioEl = null,
+  playMode = "once",
+  onPlayModeChange,
+  onEnded,
 }: {
   src: string;
   kind: "audio" | "video";
   title: string;
   size?: number;
+  /** 同目录字幕/歌词列表（用户可下拉选择） */
+  subtitleFiles?: DriveFile[];
+  autoPlay?: boolean;
+  externalMedia?: boolean;
+  externalAudioEl?: HTMLAudioElement | null;
+  playMode?: PlayMode;
+  onPlayModeChange?: (mode: PlayMode) => void;
+  /** 单曲播完且非 loop 时通知上层（列表循环切换下一首） */
+  onEnded?: () => void;
 }) {
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const lyricScrollRef = useRef<HTMLDivElement | null>(null);
+  const activeLyricRef = useRef<HTMLParagraphElement | null>(null);
+  const cueCache = useRef<Map<string, Cue[]>>(new Map());
+  const playModeRef = useRef(playMode);
+  playModeRef.current = playMode;
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -35,25 +84,164 @@ export function MediaPlayer({
   const [hover, setHover] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeSub, setActiveSub] = useState<string>("off");
+  const [cues, setCues] = useState<Cue[]>([]);
+  const [subLoading, setSubLoading] = useState(false);
   const [bars] = useState(() =>
     Array.from({ length: 28 }, () => 0.25 + Math.random() * 0.75),
+  );
+
+  const subKey = subtitleFiles.map((f) => f.id).join(",");
+
+  const subOptions: SubOption[] = useMemo(
+    () =>
+      subtitleFiles.map((f) => ({
+        id: f.id,
+        label: subtitleLabel(f.name),
+        name: f.name,
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [subKey],
   );
 
   const setMediaRef = useCallback((node: HTMLVideoElement | HTMLAudioElement | null) => {
     mediaRef.current = node;
   }, []);
 
+  // 绑定外部 audio：进度与播放状态同步到 UI
+  useEffect(() => {
+    if (!externalMedia || !externalAudioEl) return;
+    mediaRef.current = externalAudioEl;
+    const el = externalAudioEl;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const onTime = () => setCurrent(el.currentTime || 0);
+    const onMeta = () => setDuration(el.duration || 0);
+    const onWait = () => setBuffering(true);
+    const onCan = () => setBuffering(false);
+    el.addEventListener("play", onPlay);
+    el.addEventListener("pause", onPause);
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("loadedmetadata", onMeta);
+    el.addEventListener("waiting", onWait);
+    el.addEventListener("playing", onCan);
+    el.addEventListener("canplay", onCan);
+    setPlaying(!el.paused);
+    setCurrent(el.currentTime || 0);
+    setDuration(el.duration || 0);
+    setBuffering(el.readyState < 3 && !el.paused);
+    return () => {
+      el.removeEventListener("play", onPlay);
+      el.removeEventListener("pause", onPause);
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("loadedmetadata", onMeta);
+      el.removeEventListener("waiting", onWait);
+      el.removeEventListener("playing", onCan);
+      el.removeEventListener("canplay", onCan);
+    };
+  }, [externalMedia, externalAudioEl, src]);
+
   useEffect(() => {
     const el = mediaRef.current;
     if (!el) return;
     el.volume = muted ? 0 : volume;
-  }, [volume, muted]);
+  }, [volume, muted, externalMedia, externalAudioEl]);
 
   useEffect(() => {
     const el = mediaRef.current;
     if (!el) return;
     el.playbackRate = rate;
-  }, [rate]);
+  }, [rate, externalMedia, externalAudioEl]);
+
+  // 曲目/标题变化时：按文件名重新匹配歌词/字幕（必须重置，不能沿用上一曲的 activeSub）
+  useEffect(() => {
+    if (kind !== "video" && kind !== "audio") {
+      setActiveSub("off");
+      setCues([]);
+      return;
+    }
+    if (!subtitleFiles.length) {
+      setActiveSub("off");
+      setCues([]);
+      return;
+    }
+    const pref = preferredSubtitleId(title, subtitleFiles) || subtitleFiles[0]?.id || "off";
+    setActiveSub(pref);
+    setCues([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, title, subKey]);
+
+  // 按需加载并解析选中字幕/歌词
+  useEffect(() => {
+    if ((kind !== "video" && kind !== "audio") || activeSub === "off") {
+      setCues([]);
+      setSubLoading(false);
+      return;
+    }
+
+    const file = subtitleFiles.find((f) => f.id === activeSub);
+    if (!file) {
+      setCues([]);
+      setSubLoading(false);
+      return;
+    }
+
+    const cached = cueCache.current.get(file.id);
+    if (cached) {
+      setCues(cached);
+      setSubLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSubLoading(true);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/files/${file.id}/download?proxy=1`, {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error(`字幕加载失败 ${res.status}`);
+        const raw = await res.text();
+        const parsed = parseSubtitle(file.name, raw);
+        cueCache.current.set(file.id, parsed);
+        if (!cancelled) setCues(parsed);
+      } catch {
+        if (!cancelled) setCues([]);
+      } finally {
+        if (!cancelled) setSubLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, activeSub, subKey, title]);
+
+  const subtitleText = useMemo(() => {
+    if (kind !== "video" || activeSub === "off" || !cues.length) return "";
+    return cueAt(cues, current);
+  }, [kind, activeSub, cues, current]);
+
+  const activeLyricIdx = useMemo(() => {
+    if (kind !== "audio" || activeSub === "off" || !cues.length) return -1;
+    return lyricWindow(cues, current, 0).activeIdx;
+  }, [kind, activeSub, cues, current]);
+
+  // 当前句变化时，滚到可视区域正中间
+  useEffect(() => {
+    if (kind !== "audio" || activeLyricIdx < 0) return;
+    const box = lyricScrollRef.current;
+    const el = activeLyricRef.current;
+    if (!box || !el) return;
+
+    // 相对滚动容器的偏移（不依赖 offsetParent）
+    const boxRect = box.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const elTopInBox = elRect.top - boxRect.top + box.scrollTop;
+    const target = elTopInBox - box.clientHeight / 2 + elRect.height / 2;
+    box.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  }, [kind, activeLyricIdx, activeSub, cues.length]);
 
   const togglePlay = async () => {
     const el = mediaRef.current;
@@ -92,18 +280,50 @@ export function MediaPlayer({
     }
   };
 
+  const handleEnded = () => {
+    // 外部 audio 时由上层 onEnded 处理 loop/list
+    if (externalMedia) {
+      onEnded?.();
+      return;
+    }
+    const mode = playModeRef.current;
+    const el = mediaRef.current;
+    if (mode === "loop") {
+      if (el) {
+        el.currentTime = 0;
+        void el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      }
+      return;
+    }
+    setPlaying(false);
+    if (mode === "list") {
+      onEnded?.();
+    }
+  };
+
+  const cyclePlayMode = () => {
+    if (!onPlayModeChange) return;
+    const i = PLAY_MODE_CYCLE.indexOf(playMode);
+    const next = PLAY_MODE_CYCLE[(i + 1) % PLAY_MODE_CYCLE.length];
+    onPlayModeChange(next);
+  };
+
   const progress = duration > 0 ? (current / duration) * 100 : 0;
 
   return (
     <div
       ref={shellRef}
-      className={`relative w-full overflow-hidden ${kind === "video" ? "h-full max-h-full max-w-5xl" : "max-w-xl"}`}
+      className={
+        kind === "video"
+          ? "relative mx-auto flex h-full max-h-full w-full max-w-3xl items-center justify-center overflow-hidden"
+          : "relative mx-auto w-full max-w-md overflow-hidden"
+      }
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onTouchStart={() => setHover(true)}
     >
       {kind === "video" ? (
-        <div className="relative aspect-video h-full max-h-full w-full overflow-hidden bg-slate-950 sm:rounded-3xl sm:shadow-2xl sm:ring-1 sm:ring-white/10">
+        <div className="relative aspect-video max-h-full w-full overflow-hidden bg-black sm:rounded-lg sm:shadow-lg sm:ring-1 sm:ring-slate-200">
           <video
             ref={setMediaRef as React.RefCallback<HTMLVideoElement>}
             src={src}
@@ -118,17 +338,17 @@ export function MediaPlayer({
             onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
             onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime || 0)}
             onError={() => setError("视频加载失败（格式可能不被浏览器支持）")}
-            autoPlay
+            autoPlay={autoPlay}
           />
           {buffering && !error && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
               <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/30 border-t-white" />
             </div>
           )}
           {!playing && !error && !buffering && (
             <button
               onClick={() => void togglePlay()}
-              className="absolute inset-0 flex items-center justify-center bg-black/20"
+              className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20"
             >
               <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/95 text-slate-800 shadow-xl transition active:scale-95 sm:h-16 sm:w-16 hover:scale-105">
                 <svg className="ml-1 h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="currentColor">
@@ -137,8 +357,20 @@ export function MediaPlayer({
               </span>
             </button>
           )}
+          {/* 字幕贴在控制条上方，播放时更靠下、显示控制条时上移避免遮挡 */}
+          {subtitleText && (
+            <div
+              className={`np-sub-layer pointer-events-none absolute inset-x-0 z-10 flex justify-center px-3 transition-[bottom] duration-200 sm:px-6 ${
+                hover || !playing ? "bottom-[4.75rem] sm:bottom-[4.25rem]" : "bottom-5 sm:bottom-6"
+              }`}
+            >
+              <div className="np-sub-text max-w-[min(92%,42rem)] whitespace-pre-line text-center text-[14px] font-medium leading-snug sm:text-[16px] md:text-[17px]">
+                {subtitleText}
+              </div>
+            </div>
+          )}
           <div
-            className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-12 transition sm:px-4 sm:pb-3 sm:pt-10 ${
+            className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-12 transition sm:px-4 sm:pb-3 sm:pt-10 ${
               hover || !playing ? "opacity-100" : "opacity-100 sm:opacity-0"
             }`}
           >
@@ -152,6 +384,11 @@ export function MediaPlayer({
               muted={muted}
               rate={rate}
               barRef={barRef}
+              subOptions={subOptions}
+              activeSub={activeSub}
+              subLoading={subLoading}
+              onSubChange={setActiveSub}
+              trackLabel="字幕"
               onTogglePlay={() => void togglePlay()}
               onSeek={seekFromEvent}
               onVolume={(v) => {
@@ -165,33 +402,29 @@ export function MediaPlayer({
           </div>
         </div>
       ) : (
-        <div className="relative overflow-hidden rounded-3xl border border-white/40 bg-gradient-to-br from-indigo-500 via-sky-500 to-teal-400 p-[1px] shadow-2xl shadow-sky-500/25">
-          <div className="relative overflow-hidden rounded-[22px] bg-white">
-            <div className="absolute -left-10 -top-10 h-40 w-40 rounded-full bg-sky-300/30 blur-3xl" />
-            <div className="absolute -bottom-12 -right-8 h-44 w-44 rounded-full bg-teal-300/30 blur-3xl" />
-
-            <div className="relative px-4 pb-4 pt-6 sm:px-6 sm:pb-5 sm:pt-8">
-              <div className="mb-5 flex flex-col items-center text-center sm:mb-6">
-                <div className="relative mb-4 sm:mb-5">
+        <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
+          <div className="relative px-3 pb-3 pt-4 sm:px-4 sm:pb-4 sm:pt-5">
+              <div className="mb-3 flex flex-col items-center text-center sm:mb-4">
+                <div className="relative mb-3">
                   <div
-                    className={`flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-sky-500 to-teal-400 text-white shadow-xl shadow-sky-500/30 sm:h-28 sm:w-28 ${
+                    className={`flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-sky-500 to-teal-400 text-white shadow-lg shadow-sky-500/25 sm:h-20 sm:w-20 ${
                       playing ? "animate-pulse" : ""
                     }`}
                   >
-                    <svg className="h-9 w-9 sm:h-12 sm:w-12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <svg className="h-7 w-7 sm:h-9 sm:w-9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                       <path d="M9 18V5l12-2v13" />
                       <circle cx="6" cy="18" r="3" />
                       <circle cx="18" cy="16" r="3" />
                     </svg>
                   </div>
                   {playing && (
-                    <div className="absolute -bottom-3 left-1/2 flex -translate-x-1/2 items-end gap-0.5">
+                    <div className="absolute -bottom-2 left-1/2 flex -translate-x-1/2 items-end gap-0.5">
                       {bars.map((h, i) => (
                         <span
                           key={i}
                           className="np-eq w-1 origin-bottom rounded-full bg-sky-500/80"
                           style={{
-                            height: `${8 + h * 14}px`,
+                            height: `${6 + h * 10}px`,
                             animationDelay: `${i * 0.04}s`,
                           }}
                         />
@@ -199,28 +432,84 @@ export function MediaPlayer({
                     </div>
                   )}
                 </div>
-                <h3 className="max-w-full truncate px-2 text-lg font-semibold text-slate-800">{title}</h3>
-                <p className="mt-1 text-xs text-slate-500">
+                <h3 className="max-w-full truncate px-2 text-base font-semibold text-slate-800">{title}</h3>
+                <p className="mt-0.5 text-xs text-slate-500">
                   音频 · {size != null ? formatBytes(size) : "—"}
                 </p>
               </div>
 
-              <audio
-                ref={setMediaRef as React.RefCallback<HTMLAudioElement>}
-                src={src}
-                className="hidden"
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-                onWaiting={() => setBuffering(true)}
-                onPlaying={() => setBuffering(false)}
-                onCanPlay={() => setBuffering(false)}
-                onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-                onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime || 0)}
-                onError={() => setError("音频加载失败")}
-                autoPlay
-              />
+              {/* 歌词区：固定高度，可滚动，当前句居中 */}
+              {kind === "audio" && (
+                <div className="mb-3 h-40 overflow-hidden rounded-xl border border-sky-100 bg-gradient-to-b from-sky-50/80 to-white sm:h-44">
+                  {subLoading ? (
+                    <div className="flex h-full items-center justify-center text-xs text-slate-400">
+                      歌词加载中…
+                    </div>
+                  ) : !subOptions.length ? (
+                    <div className="flex h-full items-center justify-center text-xs text-slate-400">
+                      未匹配到歌词文件
+                    </div>
+                  ) : !cues.length ? (
+                    <div className="flex h-full items-center justify-center text-xs text-slate-400">
+                      未匹配到歌词内容
+                    </div>
+                  ) : (
+                    <div
+                      ref={lyricScrollRef}
+                      className="np-lyric-scroll h-full overflow-y-auto overscroll-contain px-3 sm:px-4"
+                    >
+                      {/* 上下垫高，保证首尾句也能滚到中间 */}
+                      <div className="flex flex-col items-center gap-3" style={{ paddingTop: "4.5rem", paddingBottom: "4.5rem" }}>
+                        {cues.map((line, idx) => {
+                          const active = idx === activeLyricIdx;
+                          return (
+                            <p
+                              key={`${idx}-${line.start}`}
+                              ref={active ? activeLyricRef : undefined}
+                              data-lyric-idx={idx}
+                              className={`w-full cursor-pointer select-none text-center transition-all duration-200 ${
+                                active
+                                  ? "text-sm font-semibold text-sky-700 sm:text-base"
+                                  : "text-xs text-slate-400 sm:text-[13px]"
+                              }`}
+                              onClick={() => {
+                                const el = mediaRef.current;
+                                if (!el) return;
+                                el.currentTime = Math.max(0, line.start);
+                                setCurrent(line.start);
+                              }}
+                              title="点击跳转到此句"
+                            >
+                              {line.text}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
-              <div className="rounded-2xl border border-slate-100 bg-slate-50/90 px-4 py-3 shadow-inner">
+              {!externalMedia && (
+                <audio
+                  ref={setMediaRef as React.RefCallback<HTMLAudioElement>}
+                  src={src}
+                  className="hidden"
+                  onPlay={() => setPlaying(true)}
+                  onPause={() => setPlaying(false)}
+                  onWaiting={() => setBuffering(true)}
+                  onPlaying={() => setBuffering(false)}
+                  onCanPlay={() => setBuffering(false)}
+                  onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                  onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime || 0)}
+                  onEnded={handleEnded}
+                  onError={() => setError("音频加载失败")}
+                  autoPlay={autoPlay}
+                  loop={playMode === "loop"}
+                />
+              )}
+
+              <div className="rounded-xl border border-slate-100 bg-slate-50/90 px-3 py-2.5 shadow-inner">
                 <Controls
                   kind={kind}
                   playing={playing}
@@ -231,6 +520,13 @@ export function MediaPlayer({
                   muted={muted}
                   rate={rate}
                   barRef={barRef}
+                  playMode={playMode}
+                  onPlayMode={onPlayModeChange ? cyclePlayMode : undefined}
+                  subOptions={subOptions}
+                  activeSub={activeSub}
+                  subLoading={subLoading}
+                  onSubChange={setActiveSub}
+                  trackLabel="歌词"
                   light
                   buffering={buffering}
                   onTogglePlay={() => void togglePlay()}
@@ -244,7 +540,6 @@ export function MediaPlayer({
                 />
               </div>
             </div>
-          </div>
         </div>
       )}
 
@@ -269,6 +564,13 @@ function Controls({
   barRef,
   light,
   buffering,
+  playMode = "once",
+  onPlayMode,
+  subOptions = [],
+  activeSub = "off",
+  subLoading,
+  trackLabel = "字幕",
+  onSubChange,
   onTogglePlay,
   onSeek,
   onVolume,
@@ -287,6 +589,13 @@ function Controls({
   barRef: React.RefObject<HTMLDivElement | null>;
   light?: boolean;
   buffering?: boolean;
+  playMode?: PlayMode;
+  onPlayMode?: () => void;
+  subOptions?: SubOption[];
+  activeSub?: string;
+  subLoading?: boolean;
+  trackLabel?: string;
+  onSubChange?: (id: string) => void;
   onTogglePlay: () => void;
   onSeek: (clientX: number) => void;
   onVolume: (v: number) => void;
@@ -319,10 +628,10 @@ function Controls({
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      <div className="flex items-center gap-1.5 sm:gap-2">
         <button
           onClick={onTogglePlay}
-          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition sm:h-9 sm:w-9 ${
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition sm:h-9 sm:w-9 ${
             light
               ? "bg-gradient-to-br from-sky-500 to-teal-400 text-white shadow-md shadow-sky-500/30 hover:brightness-105"
               : "bg-white/15 hover:bg-white/25"
@@ -342,41 +651,56 @@ function Controls({
           )}
         </button>
 
-        <span className={`min-w-0 flex-1 text-[11px] tabular-nums sm:min-w-[88px] sm:flex-none sm:text-xs ${mutedText}`}>
+        <span className={`shrink-0 text-[11px] tabular-nums sm:text-xs ${mutedText}`}>
           {formatTime(current)} / {formatTime(duration)}
         </span>
 
-        <div className="ml-auto flex items-center gap-1 sm:gap-2">
-          <button
-            onClick={onMute}
-            className={`rounded-lg p-2 transition sm:p-1.5 ${light ? "hover:bg-slate-200/80" : "hover:bg-white/15"}`}
-            title={muted ? "取消静音" : "静音"}
-          >
-            {muted || volume === 0 ? (
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M11 5 6 9H3v6h3l5 4V5z" />
-                <path d="m16 9 5 5M21 9l-5 5" />
-              </svg>
-            ) : (
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M11 5 6 9H3v6h3l5 4V5z" />
-                <path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8 8 0 0 1 0 12" />
-              </svg>
-            )}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={muted ? 0 : volume}
-            onChange={(e) => onVolume(Number(e.target.value))}
-            className="hidden h-1 w-14 cursor-pointer accent-sky-500 sm:block sm:w-20"
-            title="音量"
-          />
+        <button
+          onClick={onMute}
+          className={`shrink-0 rounded-lg p-1.5 transition ${light ? "hover:bg-slate-200/80" : "hover:bg-white/15"}`}
+          title={muted ? "取消静音" : "静音"}
+        >
+          {muted || volume === 0 ? (
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" />
+              <path d="m16 9 5 5M21 9l-5 5" />
+            </svg>
+          ) : (
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8 8 0 0 1 0 12" />
+            </svg>
+          )}
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={muted ? 0 : volume}
+          onChange={(e) => onVolume(Number(e.target.value))}
+          className="h-1 w-12 shrink-0 cursor-pointer accent-sky-500 sm:w-16"
+          title="音量"
+        />
+
+        <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-1.5">
+          {onPlayMode && kind === "audio" && (
+            <button
+              type="button"
+              onClick={onPlayMode}
+              className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium transition sm:text-xs ${
+                light
+                  ? "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100"
+                  : "bg-white/15 hover:bg-white/25"
+              }`}
+              title={PLAY_MODE_META[playMode].title + " · 点击切换"}
+            >
+              {PLAY_MODE_META[playMode].label}
+            </button>
+          )}
           <button
             onClick={onRate}
-            className={`rounded-lg px-2.5 py-1.5 text-xs font-medium tabular-nums transition sm:px-2 sm:py-1 ${
+            className={`shrink-0 rounded-lg px-2 py-1 text-xs font-medium tabular-nums transition ${
               light ? "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100" : "bg-white/15 hover:bg-white/25"
             }`}
             title="倍速"
@@ -386,7 +710,7 @@ function Controls({
           {kind === "video" && onFullscreen && (
             <button
               onClick={onFullscreen}
-              className="rounded-lg p-2 transition hover:bg-white/15 sm:p-1.5"
+              className="shrink-0 rounded-lg p-1.5 transition hover:bg-white/15"
               title="全屏"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -396,6 +720,51 @@ function Controls({
           )}
         </div>
       </div>
+
+      {onSubChange && (kind === "video" || kind === "audio") && (
+        <div className="flex items-center gap-2">
+          <span className={`shrink-0 text-[11px] ${mutedText}`}>{trackLabel}</span>
+          <select
+            value={activeSub === "off" && kind === "audio" && subOptions[0] ? subOptions[0].id : activeSub}
+            onChange={(e) => onSubChange(e.target.value)}
+            disabled={!subOptions.length}
+            className={`min-w-0 flex-1 rounded-lg px-2 py-1.5 text-[11px] outline-none disabled:opacity-50 sm:text-xs ${
+              light
+                ? "bg-white text-slate-600 ring-1 ring-slate-200"
+                : "bg-white/15 text-white"
+            }`}
+            title={
+              subOptions.length
+                ? `选择${trackLabel}`
+                : kind === "audio"
+                  ? "未匹配到歌词文件"
+                  : "未匹配到字幕文件"
+            }
+          >
+            {/* 无匹配时显示提示项；视频有匹配时可关字幕 */}
+            {!subOptions.length ? (
+              <option value="off" className="text-slate-800">
+                {subLoading
+                  ? "加载中…"
+                  : kind === "audio"
+                    ? "未匹配到歌词文件"
+                    : "未匹配到字幕文件"}
+              </option>
+            ) : (
+              kind === "video" && (
+                <option value="off" className="text-slate-800">
+                  {subLoading ? "加载中…" : `关${trackLabel}`}
+                </option>
+              )
+            )}
+            {subOptions.map((t) => (
+              <option key={t.id} value={t.id} className="text-slate-800" title={t.name}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,249 +1,277 @@
 # NotionPan
 
-用 Notion 当网盘：上传、下载、预览、文件夹、分享，带登录和后台。
+Self-hosted file drive with storage on **Notion** and a browser-based UI.
 
-适合 **自托管 / 单人使用**。
+[English](./README.md) · [中文](./README.zh-CN.md)
 
-技术：Next.js · Notion API · 本地索引 · Docker
+```
+Browser UI  ──►  NotionPan  ──►  Notion Database
+  (drive)        (self-host)      (your files)
+```
 
----
-
-## 目录
-
-1. [快速开始](#快速开始)
-2. [Notion 配置](#notion-配置)
-3. [日常使用](#日常使用)
-4. [部署](#部署)
-5. [数据与安全](#数据与安全)
-6. [限制说明](#限制说明)
+Single-user · Docker-ready · No extra cloud beyond your Notion workspace
 
 ---
 
-## 快速开始
+## Table of Contents
 
-### 方式一：Docker（推荐）
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+- [Notion Setup](#notion-setup)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Webhooks](#webhooks-optional)
+- [Deployment](#deployment)
+- [Project Layout](#project-layout)
+- [Acceptable Use](#acceptable-use)
+- [Limitations](#limitations)
+- [License](#license)
+
+---
+
+## Features
+
+| Area | Capabilities |
+|:---|:---|
+| **Drive** | Folders, list / gallery views, search, rename, move, delete |
+| **Upload** | Drag & drop, multi-file queue, progress, skip same-name + same-size |
+| **Import** | Pull files from public HTTPS URLs |
+| **Preview** | Image, video, audio, PDF, text, subtitles, lyrics |
+| **Share** | Password, expiry, preview / download flags, guest access at `/s/<token>` |
+| **Admin** | Site settings, credentials, env, index sync, schema repair, backup |
+| **Index** | Local SQLite (Node 22) with JSON fallback · optional Notion webhooks |
+| **Deploy** | Docker Compose one-command · persistent data volume |
+
+**Stack** — Next.js 16 · React 19 · Tailwind CSS 4 · Notion API · Sharp · iron-session · Node 22
+
+---
+
+## How It Works
+
+1. Files are uploaded to a Notion database (Files & media property).
+2. NotionPan keeps a **local index** (SQLite / JSON) for fast listing and search.
+3. Auth, shares, site config, and runtime env live under `DATA_DIR` (default `./data`).
+4. Logged-in downloads redirect to Notion temporary URLs; share downloads are proxied so Notion URLs stay private.
+
+---
+
+## Quick Start
+
+<details open>
+<summary><b>Docker</b> — recommended</summary>
 
 ```bash
 cp .env.example .env
-# 编辑 .env，至少改掉 SESSION_SECRET
+# change SESSION_SECRET before exposing the service
 
 docker compose up -d --build
 ```
 
-浏览器打开：`http://服务器IP:3000`
+| | |
+|:---|:---|
+| Open | `http://localhost:3000` or `http://<server-ip>:3000` |
+| Logs | `docker compose logs -f` |
+| Stop | `docker compose down` |
 
-```bash
-docker compose logs -f   # 日志
-docker compose down      # 停止
-```
+</details>
 
-### 方式二：源码
+<details>
+<summary><b>From source</b> — Node.js 22+</summary>
 
 ```bash
 npm install
-cp .env.example .env.local   # Windows: copy .env.example .env.local
-npm run dev                  # 开发 http://localhost:3000
+cp .env.example .env.local
+npm run dev          # → http://localhost:3000
 ```
 
-生产：
+Production:
 
 ```bash
 npm run build
-# 设置 SESSION_SECRET、COOKIE_SECURE 后
-npm start
+SESSION_SECRET='your-long-random-secret' COOKIE_SECURE=0 npm start
 ```
 
-### 第一次打开网页
+</details>
 
-1. 设置管理员账号 / 密码  
-2. 登录  
-3. 按引导填写 Notion 的 API Key 和 Database ID（也可写在 `.env` 里）  
-4. 进入网盘  
+### First visit
+
+```
+1  Create admin account
+2  Sign in
+3  Connect Notion (API key · database can be auto-created)
+4  Use the drive
+```
+
+Notion credentials can also be set later under **Admin → Environment**.
 
 ---
 
-## Notion 配置
+## Notion Setup
 
-### 1. API Key
+Official docs: [Notion Developers — Get started](https://developers.notion.com/guides/get-started/overview)
 
-1. 打开 https://app.notion.com/developers  
-2. 左侧 **连接** → 右侧 **+ 新连接**  
-3. 填名称、选工作空间 → 创建  
-4. 复制访问令牌（`ntn_` 开头）→ `NOTION_API_KEY`
+### 1. Integration token
 
-### 2. 数据库
+1. Open [Notion Integrations](https://www.notion.so/my-integrations)
+2. Create a new integration
+3. Copy the secret (`ntn_…`) → `NOTION_API_KEY`
 
-新建数据库，属性名必须如下：
+### 2. Database
 
-| 属性名 | 类型 |
-|--------|------|
-| Name | Title |
-| Folder | Text |
-| Size | Number |
-| MIME | Text |
-| Type | Select：`image` / `video` / `audio` / `pdf` / `file` |
-| File | Files & media |
+| Path | Steps |
+|:---|:---|
+| **A · Auto-create** | Admin → **Index Sync** → create database |
+| **B · Manual** | Create a database with the schema below, then share it with the integration (**⋯ → Connections**) |
 
-数据库页 **··· → 集成**，把上面的连接 **添加到页面**。
+**Manual schema**
+
+| Property | Type |
+|:---|:---|
+| `Name` | Title |
+| `Folder` | Text |
+| `Size` | Number |
+| `MIME` | Text |
+| `Type` | Select — `image` / `video` / `audio` / `pdf` / `file` |
+| `File` | Files & media |
+
+Missing columns → Admin → **Repair Schema**.
 
 ### 3. Database ID
 
-地址栏示例：
-
-```text
-https://app.notion.com/p/【这里约32位】?v=后面不要
 ```
-
-中间那串 → `NOTION_DATABASE_ID`。
-
-### 4. 环境变量
-
-| 变量 | 说明 |
-|------|------|
-| `NOTION_API_KEY` | 访问令牌 |
-| `NOTION_DATABASE_ID` | 数据库 ID |
-| `NOTION_DATA_SOURCE_ID` | 可选，一般留空 |
-| `SESSION_SECRET` | **生产必改**，≥32 位随机串 |
-| `COOKIE_SECURE` | 纯 HTTP 用 `0`；HTTPS 用 `1` |
-| `PORT` | Docker 映射端口，默认 `3000` |
-
-可写在 `.env` / `.env.local`，或登录后在 **后台 → 环境变量** 里改。
+https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?v=...
+                     └──────────── Database ID ────────────┘
+```
 
 ---
 
-## 日常使用
+## Configuration
 
-### 网盘
+| Variable | Required | Description |
+|:---|:---:|:---|
+| `SESSION_SECRET` | **prod** | Cookie encryption secret · ≥32 characters |
+| `COOKIE_SECURE` | | `0` = allow HTTP · `1` = HTTPS-only cookies |
+| `PORT` | | Host port for Compose · default `3000` |
+| `NOTION_API_KEY` | * | Integration token · or set in the UI |
+| `NOTION_DATABASE_ID` | * | Target database · or set / auto-create in the UI |
+| `NOTION_DATA_SOURCE_ID` | | Usually leave empty |
+| `NOTION_WEBHOOK_TOKEN` | | Stored automatically after webhook verification |
+| `DATA_DIR` | | Data root · default `./data` · Docker `/app/data` |
 
-- **列表 / 画廊** 切换  
-- **桌面**：右键文件  
-- **手机**：长按文件，或点 **⋯**  
-- **右下角 +**：新建、上传、刷新、后台、退出  
-- 上传后右下角可看进度  
+\* Optional if configured in the web UI after login.
 
-### 分享
+Full template: [`.env.example`](.env.example)
 
-右键/长按文件 → **分享** → 可选密码、有效期 → 得到链接：
-
-```text
-http://你的地址/s/xxxx
-```
-
-访客不用登录。分享下载走服务器反代。
-
-### 后台
-
-| 页 | 做什么 |
-|----|--------|
-| 网站信息 | 标题、描述 |
-| 账号密码 | 改登录账号 |
-| 环境变量 | Notion / Session |
-| 索引同步 | 看状态、全量同步 |
-| 备份恢复 | 导入导出 |
-
-手机端点顶部 **「‹ 网盘」** 回主页。
-
-### 上传 / 下载（简要）
-
-- **上传**：浏览器 → 本服务 → Notion（密钥只在服务器）  
-- **自己下载**：默认跳转到 Notion 临时链接  
-- **分享下载**：服务器代下，不暴露 Notion 链接  
+Runtime env saved from the admin UI is persisted under the data directory (Docker volume-friendly).
 
 ---
 
-## 部署
+## Usage
 
-### Docker（推荐）
+| Action | How |
+|:---|:---|
+| Context menu | Right-click · long-press · ⋯ |
+| FAB `+` | New folder · upload · URL import · refresh · admin · logout |
+| Share | Menu → Share → password / expiry → `/s/<token>` |
+| Admin | FAB → Admin |
 
-```bash
-cp .env.example .env
-# 改 SESSION_SECRET
+**Downloads**
 
-docker compose up -d --build
+| Who | Behavior |
+|:---|:---|
+| Logged-in user | `302` → Notion temporary URL |
+| Share visitor | Proxied by this server · Notion URL never exposed |
+
+---
+
+## Webhooks (optional)
+
+Enables incremental index updates and faster URL-import completion.
+
+Requires a public **HTTPS** endpoint:
+
+```
+https://your-domain/api/webhooks/notion
 ```
 
-数据卷 `notionpan-data` 挂在容器 `/app/data`，包含账号、索引、分享、缩略图。
+**Subscribe to**
 
-挂到当前目录也可以，改 `docker-compose.yml`：
+```
+file_upload.completed | upload_failed | expired
+page.created | deleted | undeleted | properties_updated
+```
+
+On first verification the token is stored as `NOTION_WEBHOOK_TOKEN`.
+
+Without webhooks, use **Refresh index** after editing files directly in Notion.
+
+---
+
+## Deployment
+
+| Topic | Detail |
+|:---|:---|
+| Image | Multi-stage build · Next.js `standalone` · Node 22 |
+| Data volume | `/app/data` · named volume `notionpan-data` |
+| Bind mount | Optional: `./data:/app/data` |
+| HTTPS reverse proxy | Set `COOKIE_SECURE=1` and restart |
+| Health checks | `GET /api/auth/status` · `GET /api/health` |
 
 ```yaml
+# optional bind-mount instead of named volume
 volumes:
   - ./data:/app/data
 ```
 
-不用 Compose：
+Persisted under the data directory: admin account, site config, local index, shares, thumbnails, and runtime env.
 
-```bash
-docker build -t notionpan .
-docker run -d --name notionpan -p 3000:3000 \
-  -e SESSION_SECRET='至少32位随机串' \
-  -e COOKIE_SECURE=0 \
-  -e DOCKER=1 \
-  -e DATA_DIR=/app/data \
-  -v notionpan-data:/app/data \
-  --restart unless-stopped \
-  notionpan
+---
+
+## Project Layout
+
 ```
-
-### 源码生产
-
-```bash
-npm run build
-export SESSION_SECRET='至少32位随机串'   # Windows 用 set
-export COOKIE_SECURE=0
-npm start
-```
-
-### HTTPS 反代（可选）
-
-Nginx 把域名转到 `127.0.0.1:3000` 后，设 `COOKIE_SECURE=1` 并重启。
-
----
-
-## 数据与安全
-
-### 本地文件（勿提交 Git）
-
-| 路径 | 内容 |
-|------|------|
-| `data/app-config.json` | 账号 |
-| `data/index.sqlite` 或 `index.json` | 文件索引 |
-| `data/shares.json` | 分享 |
-| `data/thumbs/` | 缩略图 |
-| `.env` / `.env.local` | 密钥 |
-
-### 务必注意
-
-1. **生产必须设置强 `SESSION_SECRET`**  
-2. **备份 JSON 含密钥**，不要外传  
-3. 分享密码强度有限，敏感文件慎用  
-4. 公网建议 HTTPS  
-5. 完成首次注册前，别把端口裸奔到公网  
-
----
-
-## 限制说明
-
-- Notion 免费单文件约 5MB，付费更大  
-- 删除是归档，不是物理抹掉  
-- 文件夹是 `Folder` 字段路径，不是 Notion 原生目录  
-- 列表优先读本地索引；Notion 里手改后需点 **刷新索引**  
-- 单机单容器最合适，多实例索引不会自动同步  
-
----
-
-## 相关文件
-
-```text
+src/
+  app/           # Next.js App Router · pages & API routes
+  components/    # Drive UI, admin, preview, share
+  lib/           # Notion, index, auth, share, backup
+data/            # Runtime data (gitignored)
 Dockerfile
 docker-compose.yml
 .env.example
-src/          源码
-data/         运行数据（自动生成）
 ```
+
+---
+
+## Acceptable Use
+
+Intended for **personal / self-hosted** use with **your own** Notion workspace.
+
+| Do | Don't |
+|:---|:---|
+| Follow [Notion Terms](https://www.notion.com/terms) & [API guidelines](https://developers.notion.com/guides/get-started/overview) | Use as free CDN / mass file-host / commercial storage at scale |
+| Keep integration secrets private | Commit tokens or share them publicly |
+| Keep request rates reasonable | Scrape, spam-upload, or automate API abuse |
+| Host only content you have rights to | Host malware or illegal material |
+| | Bypass plan limits, rate limits, or security controls |
+| | Resell / open proxy access that overloads Notion or this service |
+
+Abuse may result in Notion revoking your integration. You are solely responsible for deployment and operation.
+
+---
+
+## Limitations
+
+| | |
+|:---|:---|
+| File size | Limited by Notion plan · free ≈ 5 MB |
+| Delete | Archives to Notion trash · not hard-delete |
+| Folders | Path string in `Folder` · not native Notion hierarchy |
+| Scale | Single admin · single instance recommended |
+| URL import | Public HTTPS only · must be reachable by Notion |
 
 ---
 
 ## License
 
-Private / 按需使用。
+MIT

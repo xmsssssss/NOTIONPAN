@@ -60,11 +60,11 @@ export function LoginPage({
   };
 
   return (
-    <div className="safe-top safe-bottom flex min-h-screen min-h-[100dvh] items-center justify-center p-3 sm:p-4">
+    <div className="safe-top safe-bottom flex h-[100dvh] max-h-[100dvh] items-center justify-center overflow-y-auto overscroll-contain p-3 sm:p-4">
       <div className="w-full max-w-md overflow-hidden rounded-3xl border border-white/50 bg-white/90 shadow-2xl shadow-sky-500/10 backdrop-blur">
         <div className="bg-gradient-to-r from-sky-500 via-blue-500 to-teal-400 px-5 py-7 text-white sm:px-6 sm:py-8">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/20 text-xl font-bold backdrop-blur">
-            N
+            {(siteTitle || "N").trim().charAt(0).toUpperCase() || "N"}
           </div>
           <h1 className="text-2xl font-bold tracking-tight">{siteTitle || "NotionPan"}</h1>
           <p className="mt-1 text-sm text-white/85">

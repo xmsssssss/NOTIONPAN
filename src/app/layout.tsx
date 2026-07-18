@@ -13,6 +13,10 @@ const cfg = (() => {
 export const metadata: Metadata = {
   title: cfg.siteTitle || "NotionPan",
   description: cfg.siteDescription || "把 Notion 数据库当作网盘：上传、下载、预览文件",
+  icons: {
+    icon: "/api/site-icon",
+    apple: "/api/site-icon",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
@@ -33,8 +37,8 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" className="h-full">
-      <body className="h-full antialiased sm:min-h-screen sm:h-auto">
+    <html lang="zh-CN" className="h-full overflow-hidden">
+      <body className="h-full overflow-hidden antialiased">
         {children}
       </body>
     </html>

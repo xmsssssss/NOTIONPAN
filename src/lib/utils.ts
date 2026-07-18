@@ -8,6 +8,48 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/** 是否为可重试的网络抖动（ECONNRESET 等） */
+export function isRetriableNetworkError(err: unknown): boolean {
+  const e = err as Error & { cause?: { code?: string; message?: string; errno?: string } };
+  const msg = e?.message || String(err);
+  const cause = e?.cause;
+  const detail = [msg, cause?.message, cause?.code, cause?.errno].filter(Boolean).join(" · ");
+  return /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EPIPE|EAI_AGAIN|UND_ERR|socket hang up|network|certificate|SSL|TLS|aborted|timeout/i.test(
+    detail,
+  );
+}
+
+/** 把 Node/undici 的「fetch failed」等网络错误转成可读中文 */
+export function formatNetworkError(err: unknown, action = "请求"): string {
+  const e = err as Error & { cause?: { code?: string; message?: string; errno?: string } };
+  const msg = e?.message || String(err);
+  const cause = e?.cause;
+  const code = cause?.code || cause?.errno || "";
+  const detail = [msg, cause?.message, code].filter(Boolean).join(" · ");
+
+  if (isRetriableNetworkError(err)) {
+    return `${action}失败：连接 Notion 不稳定（${code || "ECONNRESET/网络中断"}）。已自动重试仍失败，请稍后再试；若频繁出现，请检查代理或网络到 api.notion.com。`;
+  }
+  // Notion API 业务错误原文常含 validation_error 等
+  if (msg && msg !== "fetch failed") return msg;
+  return detail || `${action}失败`;
+}
+
+export function kindLabel(kind: FileKind): string {
+  switch (kind) {
+    case "image":
+      return "图片";
+    case "video":
+      return "视频";
+    case "audio":
+      return "音频";
+    case "pdf":
+      return "PDF";
+    default:
+      return "文件";
+  }
+}
+
 export function formatDate(iso: string): string {
   try {
     return new Intl.DateTimeFormat("zh-CN", {
@@ -39,13 +81,7 @@ export function detectKind(mimeType: string, filename: string): FileKind {
   if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
     return "pdf";
   }
-  if (
-    mimeType.startsWith("text/") ||
-    mimeType === "application/json" ||
-    /\.(txt|md|markdown|json|csv|xml|yaml|yml|html|htm|css|js|ts|jsx|tsx|log|ini|conf|sh|py|java|c|cpp|h|hpp|go|rs|rb|php|sql)$/i.test(lower)
-  ) {
-    return "file";
-  }
+  // zip/rar/7z/exe/iso 等一律按通用文件，不做类型拦截
   return "file";
 }
 

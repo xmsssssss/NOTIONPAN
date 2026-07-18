@@ -14,7 +14,13 @@ import {
 type TabId = "site" | "account" | "env" | "backup" | "index";
 
 type Settings = {
-  app: { siteTitle: string; siteDescription: string; username?: string };
+  app: {
+    siteTitle: string;
+    siteDescription: string;
+    username?: string;
+    autoPlay?: boolean;
+    siteIcon?: string;
+  };
   account: { username: string };
   env: Record<string, string>;
   index?: {
@@ -28,37 +34,31 @@ type Settings = {
 const TABS: Array<{
   id: TabId;
   label: string;
-  desc: string;
   icon: React.ReactNode;
 }> = [
   {
     id: "site",
-    label: "网站信息",
-    desc: "标题与描述",
+    label: "网站设置",
     icon: <IconHome className="h-4 w-4" />,
   },
   {
     id: "account",
     label: "账号密码",
-    desc: "登录凭证",
     icon: <IconSettings className="h-4 w-4" />,
   },
   {
     id: "env",
     label: "环境变量",
-    desc: "Notion / Session",
     icon: <IconFolder className="h-4 w-4" />,
   },
   {
     id: "index",
     label: "索引同步",
-    desc: "本地索引状态",
     icon: <IconRefresh className="h-4 w-4" />,
   },
   {
     id: "backup",
     label: "备份恢复",
-    desc: "导入 / 导出",
     icon: <IconUpload className="h-4 w-4" />,
   },
 ];
@@ -85,6 +85,8 @@ export function AdminPage({
 
   const [title, setTitle] = useState(siteTitle);
   const [desc, setDesc] = useState("");
+  const [autoPlay, setAutoPlay] = useState(true);
+  const [siteIcon, setSiteIcon] = useState("N");
   const [user, setUser] = useState(username);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -93,6 +95,7 @@ export function AdminPage({
   const [envDb, setEnvDb] = useState("");
   const [envDs, setEnvDs] = useState("");
   const [envSecret, setEnvSecret] = useState("");
+  const [envWebhook, setEnvWebhook] = useState("");
 
   const [indexMeta, setIndexMeta] = useState<Settings["index"]>();
 
@@ -105,10 +108,13 @@ export function AdminPage({
       if (!res.ok) throw new Error(data.error || "加载失败");
       setTitle(data.app?.siteTitle || "NotionPan");
       setDesc(data.app?.siteDescription || "");
+      setAutoPlay(data.app?.autoPlay !== false);
+      setSiteIcon((data.app?.siteIcon || "N").slice(0, 2) || "N");
       setUser(data.account?.username || "");
       setEnvKey(data.env?.NOTION_API_KEY || "");
       setEnvDb(data.env?.NOTION_DATABASE_ID || "");
       setEnvDs(data.env?.NOTION_DATA_SOURCE_ID || "");
+      setEnvWebhook(data.env?.NOTION_WEBHOOK_TOKEN || "");
       setEnvSecret(data.env?.SESSION_SECRET || "");
       setIndexMeta(data.index);
     } catch (e) {
@@ -134,11 +140,16 @@ export function AdminPage({
       const res = await fetch("/api/admin/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siteTitle: title, siteDescription: desc }),
+        body: JSON.stringify({
+          siteTitle: title,
+          siteDescription: desc,
+          autoPlay,
+          siteIcon,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "保存失败");
-      flash("网站信息已保存");
+      flash("网站设置已保存");
       onChanged();
       await load();
     } catch (e) {
@@ -190,6 +201,7 @@ export function AdminPage({
             NOTION_DATABASE_ID: envDb,
             NOTION_DATA_SOURCE_ID: envDs,
             SESSION_SECRET: envSecret,
+            NOTION_WEBHOOK_TOKEN: envWebhook,
           },
         }),
       });
@@ -232,6 +244,63 @@ export function AdminPage({
       await load();
     } catch (e) {
       flash(null, e instanceof Error ? e.message : "同步失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const repairSchema = async () => {
+    setBusy(true);
+    flash(null);
+    try {
+      const res = await fetch("/api/admin/schema", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "repair" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "修复失败");
+      flash(
+        data.message ||
+          (data.repaired?.length
+            ? `已补全：${data.repaired.join(", ")}`
+            : "Schema 正常"),
+      );
+      await load();
+    } catch (e) {
+      flash(null, e instanceof Error ? e.message : "修复失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createDatabase = async () => {
+    const parentPageId = window.prompt(
+      "可选：父页面 ID（32 位）。留空则尝试在工作区根创建。\n请先把 Integration 加到该页面。",
+      "",
+    );
+    if (parentPageId === null) return;
+    setBusy(true);
+    flash(null);
+    try {
+      const res = await fetch("/api/admin/schema", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          parentPageId: parentPageId.trim() || undefined,
+          title: "NotionPan",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "创建失败");
+      flash(
+        `已创建数据库 ${data.created?.databaseId || ""}，环境变量已写入`,
+      );
+      onChanged();
+      await load();
+    } catch (e) {
+      flash(null, e instanceof Error ? e.message : "创建失败");
     } finally {
       setBusy(false);
     }
@@ -287,13 +356,13 @@ export function AdminPage({
   const currentTab = TABS.find((t) => t.id === tab)!;
 
   return (
-    <div className="safe-top safe-bottom min-h-screen min-h-[100dvh] bg-gradient-to-br from-slate-50 via-white to-sky-50">
-      <div className="mx-auto flex min-h-[100dvh] max-w-6xl">
+    <div className="safe-top safe-bottom h-[100dvh] max-h-[100dvh] overflow-y-auto overscroll-contain bg-gradient-to-br from-slate-50 via-white to-sky-50">
+      <div className="mx-auto flex min-h-full max-w-6xl">
         {/* Desktop sidebar */}
         <aside className="hidden w-64 shrink-0 border-r border-slate-200/80 bg-white/80 p-4 backdrop-blur md:flex md:flex-col">
           <div className="mb-6 px-2">
             <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-sky-600">
-              Admin
+              管理
             </div>
             <h1 className="text-lg font-bold text-slate-800">后台设置</h1>
             <p className="mt-0.5 truncate text-xs text-slate-500">{username}</p>
@@ -324,12 +393,7 @@ export function AdminPage({
                   >
                     {item.icon}
                   </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">{item.label}</span>
-                    <span className={`block text-[11px] ${active ? "text-white/80" : "text-slate-400"}`}>
-                      {item.desc}
-                    </span>
-                  </span>
+                  <span className="text-sm font-medium">{item.label}</span>
                 </button>
               );
             })}
@@ -375,7 +439,6 @@ export function AdminPage({
                 <h2 className="truncate text-base font-semibold text-slate-800 sm:text-lg">
                   {currentTab.label}
                 </h2>
-                <p className="hidden truncate text-xs text-slate-500 sm:block">{currentTab.desc}</p>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
@@ -444,10 +507,7 @@ export function AdminPage({
                     <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                       {item.icon}
                     </span>
-                    <span>
-                      <span className="block">{item.label}</span>
-                      <span className="block text-[11px] text-slate-400">{item.desc}</span>
-                    </span>
+                    <span>{item.label}</span>
                   </button>
                 ))}
               </div>
@@ -475,8 +535,8 @@ export function AdminPage({
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                 {tab === "site" && (
                   <Panel
-                    title="网站信息"
-                    hint="显示在登录页与网盘标题栏"
+                    title="网站设置"
+                    hint="标题、图标与媒体播放行为"
                     actions={
                       <BtnPrimary onClick={() => void saveSite()} disabled={busy}>
                         {busy ? "保存中…" : "保存"}
@@ -485,6 +545,36 @@ export function AdminPage({
                   >
                     <Field label="网站标题" value={title} onChange={setTitle} />
                     <Field label="副标题 / 描述" value={desc} onChange={setDesc} />
+                    <label className="block space-y-1.5">
+                      <span className="text-sm font-medium text-slate-700">网站图标</span>
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent)] via-[#6d8fff] to-[var(--accent-2)] text-base font-bold text-white shadow-lg shadow-blue-400/30">
+                          {(siteIcon || "N").slice(0, 2)}
+                        </div>
+                        <input
+                          value={siteIcon}
+                          onChange={(e) => setSiteIcon(e.target.value.slice(0, 2))}
+                          maxLength={2}
+                          className="w-20 rounded-xl border border-slate-200 px-3 py-2.5 text-center text-lg font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                          placeholder="N"
+                        />
+                        <span className="text-xs text-slate-400">1～2 个字符，显示在顶栏</span>
+                      </div>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={autoPlay}
+                        onChange={(e) => setAutoPlay(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-400"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-700">媒体自动播放</span>
+                        <span className="mt-0.5 block text-xs text-slate-500">
+                          开启后，预览视频 / 音频时自动开始播放
+                        </span>
+                      </span>
+                    </label>
                   </Panel>
                 )}
 
@@ -530,35 +620,65 @@ export function AdminPage({
                     }
                   >
                     <Field
-                      label="NOTION_API_KEY"
+                      label="Notion 访问令牌"
                       value={envKey}
                       onChange={setEnvKey}
                       placeholder="ntn_...（显示 **** 表示已配置）"
                     />
-                    <Field label="NOTION_DATABASE_ID" value={envDb} onChange={setEnvDb} />
                     <Field
-                      label="NOTION_DATA_SOURCE_ID（可选）"
+                      label="Notion 数据库 ID"
+                      value={envDb}
+                      onChange={setEnvDb}
+                      placeholder="约 32 位字符"
+                    />
+                    <Field
+                      label="数据源 ID（可选）"
                       value={envDs}
                       onChange={setEnvDs}
-                      placeholder="可留空自动探测"
+                      placeholder="可留空，程序会自动探测"
                     />
                     <Field
-                      label="SESSION_SECRET（≥32 字符）"
+                      label="会话密钥（≥32 字符）"
                       value={envSecret}
                       onChange={setEnvSecret}
-                      placeholder="随机长字符串"
+                      placeholder="随机长字符串，生产务必修改"
                     />
+                    <Field
+                      label="Webhook 校验令牌（可选）"
+                      value={envWebhook}
+                      onChange={setEnvWebhook}
+                      placeholder="Notion 订阅验证后自动写入，也可手动粘贴"
+                    />
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                      Webhook（需公网 HTTPS）：
+                      <code className="mx-0.5 rounded bg-slate-100 px-1">
+                        /api/webhooks/notion
+                      </code>
+                      。建议订阅{" "}
+                      <code className="rounded bg-slate-100 px-1">file_upload.*</code>
+                      {" + "}
+                      <code className="rounded bg-slate-100 px-1">page.created/deleted/properties_updated</code>
+                      。未配置时外链仍轮询；页面变更需手动「刷新索引」。
+                    </p>
                   </Panel>
                 )}
 
                 {tab === "index" && (
                   <Panel
                     title="索引同步"
-                    hint="列表优先读本地索引；可手动全量同步"
+                    hint="列表优先读本地索引；可手动全量同步。配置 Webhook 后 Notion 内改动能增量更新。"
                     actions={
-                      <BtnPrimary onClick={() => void syncIndex()} disabled={busy}>
-                        {busy ? "同步中…" : "全量同步 Notion"}
-                      </BtnPrimary>
+                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+                        <BtnGhost onClick={() => void repairSchema()} disabled={busy}>
+                          修复 Schema
+                        </BtnGhost>
+                        <BtnGhost onClick={() => void createDatabase()} disabled={busy}>
+                          自动建库
+                        </BtnGhost>
+                        <BtnPrimary onClick={() => void syncIndex()} disabled={busy}>
+                          {busy ? "同步中…" : "全量同步 Notion"}
+                        </BtnPrimary>
+                      </div>
                     }
                   >
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 sm:gap-3 lg:grid-cols-4">
@@ -567,9 +687,9 @@ export function AdminPage({
                         label="存储后端"
                         value={
                           indexMeta?.backend === "sqlite"
-                            ? "sqlite"
+                            ? "SQLite 数据库"
                             : indexMeta?.backend === "json"
-                              ? "JSON"
+                              ? "JSON 文件"
                               : "—"
                         }
                       />
@@ -587,9 +707,8 @@ export function AdminPage({
                       />
                     </div>
                     <p className="break-words text-xs leading-relaxed text-slate-500">
-                      优先 <code className="rounded bg-slate-100 px-1">node:sqlite</code>
-                      ，否则 <code className="rounded bg-slate-100 px-1">index.json</code>
-                      。缩略图在 <code className="rounded bg-slate-100 px-1">data/thumbs/</code>
+                      优先使用 SQLite 本地库，否则回退为 JSON 索引文件。缩略图缓存在服务器
+                      data/thumbs/ 目录。
                     </p>
                   </Panel>
                 )}

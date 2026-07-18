@@ -13,6 +13,8 @@ type AuthStatus = {
   username: string;
   isLoggedIn: boolean;
   sessionUser: string | null;
+  autoPlay?: boolean;
+  siteIcon?: string;
   hasApiKey?: boolean;
   hasDatabaseId?: boolean;
   hasNotionConfig?: boolean;
@@ -62,6 +64,8 @@ export function AuthShell() {
         username: payload.username || payload.sessionUser || prev?.username || "",
         isLoggedIn: true,
         sessionUser: payload.sessionUser || payload.username || null,
+        autoPlay: prev?.autoPlay,
+        siteIcon: prev?.siteIcon,
         hasApiKey: prev?.hasApiKey,
         hasDatabaseId: prev?.hasDatabaseId,
         hasNotionConfig: prev?.hasNotionConfig,
@@ -160,21 +164,25 @@ export function AuthShell() {
   }
 
   return (
-    <div className="h-full w-full sm:h-auto sm:min-h-screen">
+    <div className="flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden">
       {error && (
-        <div className="bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{error}</div>
+        <div className="shrink-0 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{error}</div>
       )}
-      <DriveApp
-        siteTitle={status.siteTitle}
-        siteDescription={status.siteDescription}
-        username={status.sessionUser || status.username}
-        onOpenAdmin={() => setView("admin")}
-        onLogout={async () => {
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-          setLoading(true);
-          void refresh();
-        }}
-      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <DriveApp
+          siteTitle={status.siteTitle}
+          siteDescription={status.siteDescription}
+          username={status.sessionUser || status.username}
+          siteIcon={status.siteIcon}
+          autoPlay={status.autoPlay !== false}
+          onOpenAdmin={() => setView("admin")}
+          onLogout={async () => {
+            await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+            setLoading(true);
+            void refresh();
+          }}
+        />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireSession } from "./session";
 import { readAppConfig } from "./app-config";
+import { formatNetworkError } from "./utils";
 
 export async function withAuth(
   handler: () => Promise<Response | NextResponse>,
@@ -19,7 +20,7 @@ export async function withAuth(
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.message, code: "UNAUTHORIZED" }, { status: 401 });
     }
-    const message = err instanceof Error ? err.message : "服务器错误";
+    const message = formatNetworkError(err, "操作");
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

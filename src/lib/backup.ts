@@ -89,6 +89,11 @@ export function importBackup(payload: BackupPayload): {
       passwordHash: payload.appConfig.passwordHash || "",
       siteTitle: payload.appConfig.siteTitle || "NotionPan",
       siteDescription: payload.appConfig.siteDescription || "",
+      autoPlay:
+        typeof payload.appConfig.autoPlay === "boolean"
+          ? payload.appConfig.autoPlay
+          : true,
+      siteIcon: payload.appConfig.siteIcon || "N",
       setupCompleted: Boolean(payload.appConfig.setupCompleted),
     });
     restored.push("appConfig");

@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DriveFile, ListFilesResult } from "@/lib/types";
-import { formatBytes, formatDate, joinFolder, parentFolder, sanitizeFolder } from "@/lib/utils";
+import { formatBytes, formatDate, joinFolder, kindLabel, parentFolder, sanitizeFolder } from "@/lib/utils";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { BtnGhost, BtnPrimary, Dialog, DialogInput } from "./Dialog";
 import { FileIcon } from "./FileIcon";
+import type { PlayMode } from "./MediaPlayer";
+import { AudioMiniBar } from "./AudioMiniBar";
 import { PreviewModal } from "./PreviewModal";
+import { SiteIcon } from "./SiteIcon";
 import { ThumbImage } from "./ThumbImage";
 import {
   IconClose,
@@ -21,7 +24,7 @@ import {
   IconLogout,
   IconMove,
   IconOpen,
-  IconPlus,
+  IconMenu,
   IconRefresh,
   IconSearch,
   IconSettings,
@@ -35,6 +38,12 @@ type Health = {
   message: string;
   hasApiKey?: boolean;
   hasDatabaseId?: boolean;
+  missing?: string[];
+  uploadLimit?: {
+    maxFileUploadSizeInBytes: number;
+    maxLabel: string;
+    workspaceName: string | null;
+  } | null;
 };
 
 type CtxTarget =
@@ -53,20 +62,32 @@ type UploadTask = {
   name: string;
   size: number;
   progress: number;
-  status: "pending" | "uploading" | "done" | "error";
+  status: "pending" | "uploading" | "done" | "error" | "skipped";
   error?: string;
+  /** 进行中阶段文案（如「同步到 Notion…」） */
+  phaseLabel?: string;
+  /** 本地文件上传，用于失败重试 */
+  file?: File;
+  folder?: string;
+  /** 外链导入 */
+  kind?: "file" | "url";
+  importUrl?: string;
 };
 
 export function DriveApp({
   siteTitle = "NotionPan",
   siteDescription = "Notion 存储 · 网盘体验",
   username,
+  siteIcon = "N",
+  autoPlay = true,
   onOpenAdmin,
   onLogout,
 }: {
   siteTitle?: string;
   siteDescription?: string;
   username?: string;
+  siteIcon?: string;
+  autoPlay?: boolean;
   onOpenAdmin?: () => void;
   onLogout?: () => void;
 } = {}) {
@@ -82,12 +103,122 @@ export function DriveApp({
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<DriveFile | null>(null);
+  /** 音频：展开预览 / 最小化迷你条 / 关闭 */
+  const [audioSession, setAudioSession] = useState<{
+    file: DriveFile;
+    siblings: DriveFile[];
+    minimized: boolean;
+    playMode: PlayMode;
+  } | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const audioSessionRef = useRef(audioSession);
+  audioSessionRef.current = audioSession;
+  const [audioPlaying, setAudioPlaying] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
+
+  const ensureAudioSrc = useCallback((fileId: string, resume: boolean) => {
+    const el = audioElRef.current;
+    if (!el) return;
+    const next = `/api/files/${fileId}/download`;
+    const cur = el.getAttribute("src") || el.src || "";
+    // 同源路径比较：避免重复赋值导致重载中断
+    const same =
+      cur.includes(`/api/files/${fileId}/download`) ||
+      cur.endsWith(`/api/files/${fileId}/download`);
+    if (!same) {
+      el.src = next;
+      el.load();
+    }
+    if (!resume) return;
+
+    const tryPlay = () => {
+      void el
+        .play()
+        .then(() => setAudioPlaying(true))
+        .catch(() => setAudioPlaying(false));
+    };
+
+    // 换源后需等 canplay，否则 play() 容易静默失败
+    if (!same || el.readyState < 2) {
+      const onReady = () => {
+        el.removeEventListener("canplay", onReady);
+        tryPlay();
+      };
+      el.addEventListener("canplay", onReady);
+      // 已有缓存时 canplay 可能已过，再补一次
+      if (el.readyState >= 2) tryPlay();
+    } else {
+      tryPlay();
+    }
+  }, []);
+
+  const openPreview = useCallback(
+    (file: DriveFile) => {
+      setPreview(file);
+      if (file.kind === "audio") {
+        // siblings 必须是当前目录完整列表（含 .lrc），播放列表再在 PreviewModal 里过滤
+        const folderFiles = files.length ? files : [file];
+        const wasPlaying = audioElRef.current ? !audioElRef.current.paused : autoPlay;
+        setAudioSession((s) => {
+          if (s && (s.file.id === file.id || s.minimized)) {
+            return {
+              ...s,
+              file,
+              minimized: false,
+              siblings: folderFiles,
+            };
+          }
+          return {
+            file,
+            siblings: folderFiles,
+            minimized: false,
+            playMode: s?.playMode || "once",
+          };
+        });
+        // 同一常驻 audio：展开不 pause，只保证 src
+        ensureAudioSrc(file.id, wasPlaying || autoPlay);
+      } else if (file.kind === "video") {
+        // 预览视频时暂停后台音乐，避免叠音
+        const el = audioElRef.current;
+        if (el && !el.paused) {
+          el.pause();
+          setAudioPlaying(false);
+        }
+      }
+    },
+    [files, autoPlay, ensureAudioSrc],
+  );
+
+  // 曲目变化时同步 src；模式变化只改 loop，不强制 play（避免手动暂停后切模式又播起来）
+  const prevAudioFileIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!audioSession) {
+      prevAudioFileIdRef.current = null;
+      return;
+    }
+    const el = audioElRef.current;
+    if (!el) return;
+    el.loop = audioSession.playMode === "loop";
+
+    const fileChanged = prevAudioFileIdRef.current !== audioSession.file.id;
+    prevAudioFileIdRef.current = audioSession.file.id;
+
+    if (fileChanged) {
+      // 仅换曲时：若当前在播 / 列表切歌意图续播，则 play
+      const shouldPlay = !el.paused || audioPlaying;
+      ensureAudioSrc(audioSession.file.id, shouldPlay);
+    }
+    // 仅改 playMode：不动播放状态
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioSession?.file.id, audioSession?.playMode, ensureAudioSrc]);
   const [dragOver, setDragOver] = useState(false);
   const [ctx, setCtx] = useState<CtxState | null>(null);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [folderDialog, setFolderDialog] = useState(false);
   const [folderName, setFolderName] = useState("");
+  const [importDialog, setImportDialog] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importName, setImportName] = useState("");
   const [renameDialog, setRenameDialog] = useState<DriveFile | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [moveDialog, setMoveDialog] = useState<DriveFile | null>(null);
@@ -107,6 +238,16 @@ export function DriveApp({
   const [fabOpen, setFabOpen] = useState(false);
   const fabRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 音频迷你条：同步 <audio> 播放状态
+  useEffect(() => {
+    const el = audioElRef.current;
+    if (!el || !audioSession?.minimized) return;
+    el.loop = audioSession.playMode === "loop";
+    if (autoPlay) {
+      void el.play().then(() => setAudioPlaying(true)).catch(() => setAudioPlaying(false));
+    }
+  }, [audioSession?.file.id, audioSession?.minimized, audioSession?.playMode, autoPlay]);
 
   useEffect(() => {
     if (!fabOpen) return;
@@ -201,61 +342,359 @@ export function DriveApp({
     loadFiles();
   }, [loadFiles]);
 
+  const patchUploadTask = useCallback((id: string, patch: Partial<UploadTask>) => {
+    setUploadTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  const runUploadTask = useCallback(
+    async (
+      taskId: string,
+      file: File,
+      targetFolder: string,
+      onProgress?: (pct: number) => void,
+    ) => {
+      const { uploadViaServer } = await import("@/lib/client-upload");
+      patchUploadTask(taskId, {
+        status: "uploading",
+        progress: 0,
+        error: undefined,
+        phaseLabel: "上传到服务器…",
+        kind: "file",
+        file,
+        folder: targetFolder,
+      });
+      try {
+        const result = await uploadViaServer(file, targetFolder, (pct, info) => {
+          patchUploadTask(taskId, {
+            progress: pct,
+            phaseLabel: info?.message || (pct < 40 ? "上传到服务器…" : "同步到 Notion…"),
+          });
+          onProgress?.(pct);
+        });
+        patchUploadTask(taskId, {
+          status: result.skipped ? "skipped" : "done",
+          progress: 100,
+          phaseLabel: undefined,
+          error: result.skipped ? "同目录已存在同名同大小文件，已跳过" : undefined,
+          file: undefined,
+        });
+        return true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : `上传失败: ${file.name}`;
+        patchUploadTask(taskId, {
+          status: "error",
+          error: msg,
+          phaseLabel: undefined,
+          kind: "file",
+          file,
+          folder: targetFolder,
+        });
+        return false;
+      }
+    },
+    [patchUploadTask],
+  );
+
+  const runImportUrlTask = useCallback(
+    async (
+      taskId: string,
+      url: string,
+      targetFolder: string,
+      filename?: string,
+    ) => {
+      patchUploadTask(taskId, {
+        status: "uploading",
+        progress: 10,
+        error: undefined,
+        phaseLabel: "提交到 Notion…",
+        kind: "url",
+        importUrl: url,
+        folder: targetFolder,
+      });
+      // 等待 Notion 拉文件期间的假进度（真正完成靠 job 轮询 / Webhook）
+      let fake = 12;
+      const timer = setInterval(() => {
+        fake = Math.min(88, fake + 2);
+        patchUploadTask(taskId, {
+          progress: fake,
+          phaseLabel: "Notion 拉取中…",
+        });
+      }, 1200);
+      try {
+        const res = await fetch("/api/files/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url,
+            filename: filename || undefined,
+            folder: targetFolder,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "导入失败");
+
+        if (data.skipped) {
+          clearInterval(timer);
+          patchUploadTask(taskId, {
+            status: "skipped",
+            progress: 100,
+            phaseLabel: undefined,
+            error: "当前目录已存在同名文件，已跳过",
+            kind: "url",
+            importUrl: url,
+            folder: targetFolder,
+          });
+          return true;
+        }
+
+        // 异步任务：轮询直到 done / error
+        const jobId = String(data.jobId || "");
+        if (!jobId) {
+          clearInterval(timer);
+          patchUploadTask(taskId, {
+            status: "done",
+            progress: 100,
+            phaseLabel: undefined,
+            kind: "url",
+            importUrl: url,
+            folder: targetFolder,
+          });
+          return true;
+        }
+
+        patchUploadTask(taskId, {
+          phaseLabel: "等待 Notion 完成…",
+          progress: Math.max(fake, 20),
+        });
+
+        const deadline = Date.now() + 20 * 60 * 1000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const stRes = await fetch(
+            `/api/files/import?jobId=${encodeURIComponent(jobId)}`,
+          );
+          const st = await stRes.json();
+          if (!stRes.ok) throw new Error(st.error || "查询导入状态失败");
+
+          if (st.status === "done") {
+            clearInterval(timer);
+            patchUploadTask(taskId, {
+              status: "done",
+              progress: 100,
+              phaseLabel: undefined,
+              error: undefined,
+              kind: "url",
+              importUrl: url,
+              folder: targetFolder,
+            });
+            return true;
+          }
+          if (st.status === "skipped") {
+            clearInterval(timer);
+            patchUploadTask(taskId, {
+              status: "skipped",
+              progress: 100,
+              phaseLabel: undefined,
+              error: "当前目录已存在同名文件，已跳过",
+              kind: "url",
+              importUrl: url,
+              folder: targetFolder,
+            });
+            return true;
+          }
+          if (st.status === "error") {
+            throw new Error(st.error || "导入失败");
+          }
+          patchUploadTask(taskId, {
+            phaseLabel: "Notion 拉取中…",
+            progress: Math.min(92, Math.max(fake, 25)),
+          });
+        }
+        throw new Error("导入超时，请稍后刷新列表查看是否已完成");
+      } catch (e) {
+        clearInterval(timer);
+        const msg = e instanceof Error ? e.message : "导入失败";
+        patchUploadTask(taskId, {
+          status: "error",
+          error: msg,
+          phaseLabel: undefined,
+          kind: "url",
+          importUrl: url,
+          folder: targetFolder,
+          progress: 100,
+        });
+        return false;
+      } finally {
+        clearInterval(timer);
+      }
+    },
+    [patchUploadTask],
+  );
+
   const uploadFiles = async (list: FileList | File[]) => {
     const arr = Array.from(list);
     if (!arr.length) return;
 
-    // 默认服务端上传：密钥不离开服务器
-    const { uploadViaServer } = await import("@/lib/client-upload");
+    const targetFolder = folder;
+    const maxBytes = health?.uploadLimit?.maxFileUploadSizeInBytes;
+    const maxLabel = health?.uploadLimit?.maxLabel;
 
-    const batch: UploadTask[] = arr.map((file, i) => ({
-      id: `${Date.now()}-${i}-${file.name}`,
-      name: file.name,
-      size: file.size,
-      progress: 0,
-      status: "pending" as const,
-    }));
+    const batch: UploadTask[] = arr.map((file, i) => {
+      const over =
+        typeof maxBytes === "number" && maxBytes > 0 && file.size > maxBytes;
+      return {
+        id: `${Date.now()}-${i}-${file.name}`,
+        name: file.name,
+        size: file.size,
+        progress: over ? 100 : 0,
+        status: over ? ("error" as const) : ("pending" as const),
+        error: over
+          ? `超过 Notion 上限 ${maxLabel || formatBytes(maxBytes!)}（当前 ${formatBytes(file.size)}）`
+          : undefined,
+        file: over ? undefined : file,
+        folder: targetFolder,
+      };
+    });
 
     setUploadTasks((prev) => [...batch, ...prev].slice(0, 40));
     setUploadPanelOpen(true);
     setUploading(true);
     setUploadPct(0);
-    setError(null);
-
-    const patchTask = (id: string, patch: Partial<UploadTask>) => {
-      setUploadTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-    };
 
     try {
-      for (let i = 0; i < arr.length; i++) {
-        const file = arr[i];
-        const taskId = batch[i].id;
-        patchTask(taskId, { status: "uploading", progress: 0 });
-
-        const report = (pct: number) => {
-          patchTask(taskId, { progress: pct });
-          const base = (i / arr.length) * 100;
-          const part = (pct / 100) * (100 / arr.length);
+      const toUpload = batch.filter((t) => t.status === "pending" && t.file);
+      for (let i = 0; i < toUpload.length; i++) {
+        const task = toUpload[i];
+        const file = task.file!;
+        await runUploadTask(task.id, file, targetFolder, (pct) => {
+          const base = (i / Math.max(1, toUpload.length)) * 100;
+          const part = (pct / 100) * (100 / Math.max(1, toUpload.length));
           setUploadPct(Math.round(base + part));
-        };
-
-        try {
-          await uploadViaServer(file, folder, report);
-          patchTask(taskId, { status: "done", progress: 100 });
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : `上传失败: ${file.name}`;
-          patchTask(taskId, { status: "error", error: msg });
-          throw e;
-        }
+        });
       }
       setUploadPct(100);
       await loadFiles();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "上传失败");
+    } catch {
+      // 失败详情只在上传列表中展示
     } finally {
       setUploading(false);
       setTimeout(() => setUploadPct(0), 800);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const canRetryTask = (t: UploadTask) =>
+    t.status === "error" && (Boolean(t.file) || Boolean(t.importUrl));
+
+  const retryUploadTask = async (task: UploadTask) => {
+    if (!canRetryTask(task) || uploading) return;
+    setUploading(true);
+    setUploadPct(0);
+    setUploadPanelOpen(true);
+    try {
+      let ok = false;
+      if (task.kind === "url" && task.importUrl) {
+        ok = await runImportUrlTask(
+          task.id,
+          task.importUrl,
+          task.folder || folder,
+          task.name.startsWith("http") ? undefined : task.name,
+        );
+      } else if (task.file) {
+        ok = await runUploadTask(task.id, task.file, task.folder || folder, (pct) => {
+          setUploadPct(pct);
+        });
+      }
+      setUploadPct(100);
+      if (ok) await loadFiles();
+    } finally {
+      setUploading(false);
+      setTimeout(() => setUploadPct(0), 800);
+    }
+  };
+
+  const retryAllFailed = async () => {
+    const failed = uploadTasks.filter(canRetryTask);
+    if (!failed.length || uploading) return;
+    setUploading(true);
+    setUploadPct(0);
+    setUploadPanelOpen(true);
+    try {
+      for (let i = 0; i < failed.length; i++) {
+        const t = failed[i];
+        let ok = false;
+        if (t.kind === "url" && t.importUrl) {
+          ok = await runImportUrlTask(
+            t.id,
+            t.importUrl,
+            t.folder || folder,
+            t.name.startsWith("http") ? undefined : t.name,
+          );
+        } else if (t.file) {
+          ok = await runUploadTask(t.id, t.file, t.folder || folder, (pct) => {
+            const base = (i / failed.length) * 100;
+            const part = (pct / 100) * (100 / failed.length);
+            setUploadPct(Math.round(base + part));
+          });
+        }
+        void ok;
+      }
+      setUploadPct(100);
+      await loadFiles();
+    } finally {
+      setUploading(false);
+      setTimeout(() => setUploadPct(0), 800);
+    }
+  };
+
+  const openImportUrl = () => {
+    setImportUrl("");
+    setImportName("");
+    setImportDialog(true);
+  };
+
+  const submitImportUrl = async () => {
+    const url = importUrl.trim();
+    if (!url) return;
+    // 关闭对话框，任务进上传列表（状态只在列表中展示）
+    setImportDialog(false);
+
+    let displayName = importName.trim();
+    if (!displayName) {
+      try {
+        const last = new URL(url).pathname.split("/").filter(Boolean).pop() || "";
+        displayName = decodeURIComponent(last).split("?")[0] || url;
+      } catch {
+        displayName = url;
+      }
+    }
+
+    const taskId = `url-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const filenameOpt = importName.trim() || undefined;
+    const task: UploadTask = {
+      id: taskId,
+      name: displayName,
+      size: 0,
+      progress: 0,
+      status: "pending",
+      kind: "url",
+      importUrl: url,
+      folder,
+    };
+    setUploadTasks((prev) => [task, ...prev].slice(0, 40));
+    setUploadPanelOpen(true);
+    setUploading(true);
+    setUploadPct(0);
+    setImportUrl("");
+    setImportName("");
+
+    try {
+      await runImportUrlTask(taskId, url, folder, filenameOpt);
+      setUploadPct(100);
+      await loadFiles();
+    } finally {
+      setUploading(false);
+      setTimeout(() => setUploadPct(0), 800);
     }
   };
 
@@ -554,6 +993,7 @@ export function DriveApp({
 
     return [
       { id: "upload", label: "上传文件", icon: icon(<IconUpload className="h-4 w-4" />) },
+      { id: "import-url", label: "链接导入", icon: icon(<IconDownload className="h-4 w-4" />) },
       { id: "new-folder", label: "新建文件夹", icon: icon(<IconFolderPlus className="h-4 w-4" />) },
       { id: "sep3", label: "", separator: true },
       { id: "refresh", label: "刷新", icon: icon(<IconRefresh className="h-4 w-4" />) },
@@ -566,6 +1006,11 @@ export function DriveApp({
   const onMenuSelect = (id: string) => {
     if (!ctx) return;
     const target = ctx.target;
+
+    if (id === "import-url") {
+      openImportUrl();
+      return;
+    }
 
     if (id === "upload" || id === "upload-here") {
       if (target.type === "folder") {
@@ -594,9 +1039,11 @@ export function DriveApp({
     }
     if (target.type !== "file") return;
 
-    if (id === "preview") setPreview(target.file);
+    if (id === "preview") openPreview(target.file);
     if (id === "download") {
-      window.location.href = `/api/files/${target.file.id}/download`;
+      void import("@/lib/client-file").then(({ openFileDownload }) => {
+        openFileDownload(target.file);
+      });
     }
     if (id === "share") void openShare(target.file);
     if (id === "rename") openRename(target.file);
@@ -606,18 +1053,17 @@ export function DriveApp({
 
   return (
     <div
-      className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden px-3 sm:h-auto sm:min-h-screen sm:max-h-none sm:overflow-visible sm:px-6"
+      className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden px-3 sm:px-6"
       style={{
-        // 内联样式，不依赖 CSS 构建缓存；顶部固定留白 + 刘海安全区
-        paddingTop: "calc(24px + env(safe-area-inset-top, 0px))",
+        // 视口高度固定：仅中间列表滚动，顶栏/工具栏不跟着滚
+        paddingTop: "calc(16px + env(safe-area-inset-top, 0px))",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
         paddingLeft: "max(12px, env(safe-area-inset-left, 0px))",
         paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
       }}
     >
       <header className="mb-3 flex shrink-0 items-center gap-3 sm:mb-6">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent)] via-[#6d8fff] to-[var(--accent-2)] text-base font-bold text-white shadow-lg shadow-blue-400/30 sm:h-11 sm:w-11 sm:text-lg">
-          N
-        </div>
+        <SiteIcon letter={siteIcon} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate bg-gradient-to-r from-slate-800 via-blue-700 to-teal-600 bg-clip-text text-lg font-bold tracking-tight text-transparent sm:text-2xl">
             {siteTitle}
@@ -642,7 +1088,15 @@ export function DriveApp({
           <strong>配置检查：</strong> {health.message}
           {!health.hasApiKey || !health.hasDatabaseId
             ? " 请复制 .env.example 为 .env.local 并填写 NOTION_API_KEY / NOTION_DATABASE_ID。"
-            : " 请确认 Integration 已连接该数据库，且属性完整。"}
+            : " 可在后台「索引同步」修复 Schema，或确认 Integration 已连接该数据库。"}
+        </div>
+      )}
+      {health?.uploadLimit?.maxLabel && (
+        <div className="mb-2 hidden shrink-0 text-[11px] text-slate-400 sm:mb-3 sm:block">
+          Notion 单文件上限：{health.uploadLimit.maxLabel}
+          {health.uploadLimit.workspaceName
+            ? ` · ${health.uploadLimit.workspaceName}`
+            : ""}
         </div>
       )}
 
@@ -779,15 +1233,6 @@ export function DriveApp({
         </div>
       )}
 
-      {uploading && (
-        <div className="mb-2 h-1.5 shrink-0 overflow-hidden rounded-full bg-blue-100 sm:mb-4">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] transition-all"
-            style={{ width: `${uploadPct}%` }}
-          />
-        </div>
-      )}
-
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -800,7 +1245,7 @@ export function DriveApp({
           dragOver ? "ring-2 ring-[var(--accent)] ring-offset-2" : ""
         }`}
       >
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
         {loading ? (
           <div className="flex h-full min-h-48 items-center justify-center text-[var(--muted)]">加载中…</div>
         ) : folders.length === 0 && files.length === 0 ? (
@@ -840,7 +1285,7 @@ export function DriveApp({
                 <button
                   key={file.id}
                   type="button"
-                  onClick={() => setPreview(file)}
+                   onClick={() => openPreview(file)}
                   onContextMenu={(e) => openContext(e, { type: "file", file })}
                   {...bindLongPress({ type: "file", file })}
                   className="group overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition active:scale-[0.98] hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md"
@@ -855,7 +1300,7 @@ export function DriveApp({
                   <div className="truncate px-2.5 py-2 text-sm font-medium text-slate-700 sm:px-3">{file.name}</div>
                   <div className="flex items-center justify-between px-2.5 pb-2 text-xs text-slate-400 sm:px-3">
                     <span>{formatBytes(file.size)}</span>
-                    <span className="hidden sm:inline">{file.kind}</span>
+                    <span className="hidden sm:inline">{kindLabel(file.kind)}</span>
                   </div>
                 </button>
               ))}
@@ -886,7 +1331,7 @@ export function DriveApp({
                 <div
                   key={`m-file-${file.id}`}
                   className="flex items-center gap-3 px-3 py-3 active:bg-slate-50"
-                  onClick={() => setPreview(file)}
+                   onClick={() => openPreview(file)}
                   onContextMenu={(e) => openContext(e, { type: "file", file })}
                   {...bindLongPress({ type: "file", file })}
                 >
@@ -975,11 +1420,11 @@ export function DriveApp({
                       key={file.id}
                       className="border-b border-[var(--border)]/70 hover:bg-blue-50/60"
                       onContextMenu={(e) => openContext(e, { type: "file", file })}
-                      onDoubleClick={() => setPreview(file)}
+                      onDoubleClick={() => openPreview(file)}
                     >
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => setPreview(file)}
+                          onClick={() => openPreview(file)}
                           className="inline-flex max-w-xs items-center gap-2 truncate text-left hover:text-[var(--accent)] sm:max-w-md"
                           title={file.name}
                         >
@@ -1001,7 +1446,7 @@ export function DriveApp({
                         </button>
                       </td>
                       <td className="px-4 py-3 text-[var(--muted)]">{formatBytes(file.size)}</td>
-                      <td className="px-4 py-3 text-[var(--muted)]">{file.kind}</td>
+                      <td className="px-4 py-3 text-[var(--muted)]">{kindLabel(file.kind)}</td>
                       <td className="px-4 py-3 text-[var(--muted)]">{formatDate(file.createdTime)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
@@ -1035,15 +1480,11 @@ export function DriveApp({
         </div>
       </div>
 
-      <footer className="safe-bottom mt-2 hidden shrink-0 pb-2 text-center text-xs text-[var(--muted)] sm:mt-6 sm:block sm:pb-4">
-        右下角菜单 · 右键可管理文件 · 画廊仅加载缩略图
-      </footer>
-
-      {/* 移动端底部占位，避免列表被 FAB 挡住 */}
-      <div className="h-20 shrink-0 sm:hidden" aria-hidden />
+      {/* 底部占位，避免列表被 FAB / 上传面板挡住 */}
+      <div className="h-16 shrink-0 sm:h-4" aria-hidden />
 
       {/* 右下角悬浮菜单（向上展开） */}
-      <div ref={fabRef} className="fab-offset fixed z-40 flex flex-col items-end gap-2">
+      <div ref={fabRef} className="fab-offset fixed z-[45] flex flex-col items-end gap-2">
         {fabOpen && (
           <div className="mb-1 flex flex-col-reverse items-end gap-2">
             {[
@@ -1052,6 +1493,12 @@ export function DriveApp({
                 label: "新建文件夹",
                 icon: <IconFolderPlus className="h-4 w-4" />,
                 onClick: () => openCreateFolder(),
+              },
+              {
+                id: "import-url",
+                label: "链接导入",
+                icon: <IconDownload className="h-4 w-4" />,
+                onClick: () => openImportUrl(),
               },
               {
                 id: "upload",
@@ -1128,21 +1575,21 @@ export function DriveApp({
         <button
           type="button"
           onClick={() => setFabOpen((v) => !v)}
-          className={`flex h-14 w-14 items-center justify-center rounded-full text-white shadow-xl transition-all ${
+          className={`flex h-12 w-12 items-center justify-center rounded-full text-white shadow-xl transition-all ${
             fabOpen
-              ? "rotate-45 bg-slate-700 shadow-slate-400/40"
+              ? "bg-slate-700 shadow-slate-400/40"
               : "bg-gradient-to-br from-sky-500 via-blue-500 to-teal-400 shadow-sky-500/40 hover:scale-105"
           }`}
           title={fabOpen ? "关闭菜单" : "打开菜单"}
           aria-expanded={fabOpen}
         >
-          {fabOpen ? <IconClose className="h-6 w-6" /> : <IconPlus className="h-7 w-7" />}
+          {fabOpen ? <IconClose className="h-5 w-5" /> : <IconMenu className="h-6 w-6" />}
         </button>
       </div>
 
       {/* 上传任务列表 */}
       {(uploadPanelOpen || uploadTasks.length > 0) && (
-        <div className="upload-panel-offset fixed z-40 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-300/40 sm:w-[min(100vw-2rem,22rem)]">
+        <div className="upload-panel-offset fixed z-[35] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-300/40 sm:w-[min(100vw-2rem,28rem)]">
           <div className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-sky-50 to-teal-50 px-3 py-2">
             <button
               type="button"
@@ -1154,21 +1601,56 @@ export function DriveApp({
                 <span className="ml-2 text-xs font-normal text-sky-600">进行中 {uploadPct}%</span>
               ) : (
                 <span className="ml-2 text-xs font-normal text-slate-400">
-                  {uploadTasks.filter((t) => t.status === "done").length}/{uploadTasks.length}
+                  {
+                    uploadTasks.filter(
+                      (t) => t.status === "done" || t.status === "skipped",
+                    ).length
+                  }
+                  /{uploadTasks.length}
                 </span>
               )}
             </button>
             <div className="flex items-center gap-1">
-              {!uploading && uploadTasks.length > 0 && (
+              {!uploading && uploadTasks.some(canRetryTask) && (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-xs font-medium text-sky-600 hover:bg-white"
+                  onClick={() => void retryAllFailed()}
+                >
+                  全部重试
+                </button>
+              )}
+              {!uploading && uploadTasks.some((t) => t.status === "error") && (
                 <button
                   type="button"
                   className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-white"
                   onClick={() => {
-                    setUploadTasks([]);
-                    setUploadPanelOpen(false);
+                    setUploadTasks((prev) => {
+                      const next = prev.filter((t) => t.status !== "error");
+                      if (next.length === 0) setUploadPanelOpen(false);
+                      return next;
+                    });
                   }}
                 >
-                  清空
+                  清空失败
+                </button>
+              )}
+              {!uploading &&
+                uploadTasks.some((t) => t.status === "done" || t.status === "skipped") && (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-white"
+                  onClick={() => {
+                    setUploadTasks((prev) => {
+                      const next = prev.filter(
+                        (t) => t.status !== "done" && t.status !== "skipped",
+                      );
+                      if (next.length === 0) setUploadPanelOpen(false);
+                      return next;
+                    });
+                  }}
+                >
+                  清空已完成
                 </button>
               )}
               <button
@@ -1192,46 +1674,106 @@ export function DriveApp({
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-xs font-medium text-slate-800" title={t.name}>
+                          {t.kind === "url" ? (
+                            <span className="mr-1 rounded bg-sky-100 px-1 py-0.5 text-[10px] font-medium text-sky-700">
+                              链接
+                            </span>
+                          ) : null}
                           {t.name}
                         </div>
-                        <div className="mt-0.5 text-[11px] text-slate-400">{formatBytes(t.size)}</div>
+                        <div
+                          className="mt-0.5 truncate text-[11px] text-slate-400"
+                          title={t.status === "uploading" && t.phaseLabel ? t.phaseLabel : t.importUrl}
+                        >
+                          {t.status === "uploading" && t.phaseLabel
+                            ? t.phaseLabel
+                            : t.kind === "url"
+                              ? t.importUrl || "外链导入"
+                              : formatBytes(t.size)}
+                        </div>
                       </div>
-                      <span
-                        className={`shrink-0 text-[11px] font-medium ${
-                          t.status === "done"
-                            ? "text-emerald-600"
-                            : t.status === "error"
-                              ? "text-red-500"
-                              : t.status === "uploading"
-                                ? "text-sky-600"
-                                : "text-slate-400"
-                        }`}
-                      >
-                        {t.status === "done"
-                          ? "完成"
-                          : t.status === "error"
-                            ? "失败"
-                            : t.status === "uploading"
-                              ? `${t.progress}%`
-                              : "等待"}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {canRetryTask(t) && (
+                          <button
+                            type="button"
+                            disabled={uploading}
+                            className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-sky-600 ring-1 ring-sky-200 hover:bg-sky-50 disabled:opacity-50"
+                            onClick={() => void retryUploadTask(t)}
+                          >
+                            重试
+                          </button>
+                        )}
+                        {t.status === "error" && (
+                          <button
+                            type="button"
+                            disabled={uploading}
+                            className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50"
+                            title="取消并移除该任务"
+                            onClick={() => {
+                              setUploadTasks((prev) => {
+                                const next = prev.filter((x) => x.id !== t.id);
+                                if (next.length === 0) setUploadPanelOpen(false);
+                                return next;
+                              });
+                            }}
+                          >
+                            取消
+                          </button>
+                        )}
+                        <span
+                          className={`text-[11px] font-medium ${
+                            t.status === "done"
+                              ? "text-emerald-600"
+                              : t.status === "skipped"
+                                ? "text-amber-600"
+                                : t.status === "error"
+                                  ? "text-red-500"
+                                  : t.status === "uploading"
+                                    ? "text-sky-600"
+                                    : "text-slate-400"
+                          }`}
+                        >
+                          {t.status === "done"
+                            ? "完成"
+                            : t.status === "skipped"
+                              ? "跳过"
+                              : t.status === "error"
+                                ? "失败"
+                                : t.status === "uploading"
+                                  ? t.kind === "url"
+                                    ? "导入中"
+                                    : `${t.progress}%`
+                                  : "等待"}
+                        </span>
+                      </div>
                     </div>
                     <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-200">
                       <div
                         className={`h-full rounded-full transition-all ${
                           t.status === "error"
                             ? "bg-red-400"
-                            : t.status === "done"
-                              ? "bg-emerald-500"
-                              : "bg-gradient-to-r from-sky-500 to-teal-400"
+                            : t.status === "skipped"
+                              ? "bg-amber-400"
+                              : t.status === "done"
+                                ? "bg-emerald-500"
+                                : "bg-gradient-to-r from-sky-500 to-teal-400"
                         }`}
                         style={{
-                          width: `${t.status === "done" ? 100 : t.status === "error" ? 100 : t.progress}%`,
+                          width: `${
+                            t.status === "done" || t.status === "skipped" || t.status === "error"
+                              ? 100
+                              : t.progress
+                          }%`,
                         }}
                       />
                     </div>
                     {t.error && (
-                      <div className="mt-1 truncate text-[11px] text-red-500" title={t.error}>
+                      <div
+                        className={`mt-1 truncate text-[11px] ${
+                          t.status === "skipped" ? "text-amber-600" : "text-red-500"
+                        }`}
+                        title={t.error}
+                      >
                         {t.error}
                       </div>
                     )}
@@ -1243,7 +1785,178 @@ export function DriveApp({
         </div>
       )}
 
-      {preview && <PreviewModal file={preview} onClose={() => setPreview(null)} />}
+      {/* 常驻 audio：最小化/展开共用，避免重挂载导致暂停与状态丢失 */}
+      <audio
+        ref={audioElRef}
+        className="hidden"
+        onPlay={() => setAudioPlaying(true)}
+        onPause={() => setAudioPlaying(false)}
+        onEnded={() => {
+          const s = audioSessionRef.current;
+          if (!s) {
+            setAudioPlaying(false);
+            return;
+          }
+          if (s.playMode === "loop") {
+            const el = audioElRef.current;
+            if (el) {
+              el.currentTime = 0;
+              void el.play().then(() => setAudioPlaying(true)).catch(() => setAudioPlaying(false));
+            }
+            return;
+          }
+          if (s.playMode === "list") {
+            const list = s.siblings.filter((f) => f.kind === "audio");
+            if (list.length < 1) {
+              setAudioPlaying(false);
+              return;
+            }
+            const idx = list.findIndex((f) => f.id === s.file.id);
+            const next = list[(idx + 1 + list.length) % list.length] || list[0];
+            if (next) {
+              // 先标记续播意图，再切曲目；effect + ensureAudioSrc 会 play
+              setAudioPlaying(true);
+              setAudioSession((prev) => (prev ? { ...prev, file: next } : prev));
+              if (!s.minimized) setPreview(next);
+              // 同步调用，不依赖 effect 时序
+              ensureAudioSrc(next.id, true);
+            }
+            return;
+          }
+          setAudioPlaying(false);
+        }}
+      />
+
+      {/* 音频最小化时隐藏预览弹窗，会话与 audio 仍在 */}
+      {preview && !(audioSession?.minimized && preview.kind === "audio") && (
+        <PreviewModal
+          file={preview}
+          siblings={
+            preview.kind === "audio" || preview.kind === "video"
+              ? audioSession?.siblings ?? files
+              : files
+          }
+          autoPlay={preview.kind === "audio" ? false : autoPlay}
+          externalAudio={preview.kind === "audio"}
+          externalAudioEl={preview.kind === "audio" ? audioElRef.current : null}
+          playMode={preview.kind === "audio" ? audioSession?.playMode : undefined}
+          onPlayModeChange={
+            preview.kind === "audio"
+              ? (mode) => {
+                  // 只改模式，不触发播放
+                  const el = audioElRef.current;
+                  if (el) el.loop = mode === "loop";
+                  setAudioSession((s) => (s ? { ...s, playMode: mode } : s));
+                }
+              : undefined
+          }
+          onCurrentChange={(f) => {
+            setPreview(f);
+            if (f.kind === "audio") {
+              const wasPlaying = audioElRef.current ? !audioElRef.current.paused : true;
+              setAudioSession((s) =>
+                s
+                  ? { ...s, file: f, siblings: s.siblings.length ? s.siblings : files }
+                  : {
+                      file: f,
+                      siblings: files.length ? files : [f],
+                      minimized: false,
+                      playMode: "once",
+                    },
+              );
+              ensureAudioSrc(f.id, wasPlaying);
+            }
+          }}
+          onMinimize={
+            preview.kind === "audio"
+              ? () => {
+                  // 只切 UI：正在播则继续播，已暂停则保持暂停（不要强制 play）
+                  setAudioSession((s) =>
+                    s
+                      ? { ...s, file: preview, minimized: true }
+                      : {
+                          file: preview,
+                          siblings: files.length ? files : [preview],
+                          minimized: true,
+                          playMode: "once",
+                        },
+                  );
+                  setPreview(null);
+                  const el = audioElRef.current;
+                  setAudioPlaying(Boolean(el && !el.paused));
+                }
+              : undefined
+          }
+          onClose={() => {
+            setPreview(null);
+            if (preview.kind === "audio") {
+              setAudioSession(null);
+              setAudioPlaying(false);
+              const el = audioElRef.current;
+              if (el) {
+                el.pause();
+                el.removeAttribute("src");
+                el.load();
+              }
+            }
+          }}
+        />
+      )}
+
+      {audioSession?.minimized && (
+        <AudioMiniBar
+          file={audioSession.file}
+          playing={audioPlaying}
+          hasPrev={audioSession.siblings.filter((f) => f.kind === "audio").length > 1}
+          hasNext={audioSession.siblings.filter((f) => f.kind === "audio").length > 1}
+          onExpand={() => {
+            // 不 pause：展开仍用同一 audio
+            setPreview(audioSession.file);
+            setAudioSession((s) => (s ? { ...s, minimized: false } : s));
+          }}
+          onTogglePlay={() => {
+            const el = audioElRef.current;
+            if (!el) return;
+            if (el.paused) void el.play().then(() => setAudioPlaying(true));
+            else {
+              el.pause();
+              setAudioPlaying(false);
+            }
+          }}
+          onPrev={() => {
+            const list = audioSession.siblings.filter((f) => f.kind === "audio");
+            if (list.length < 2) return;
+            const idx = list.findIndex((f) => f.id === audioSession.file.id);
+            const prev = list[(idx - 1 + list.length) % list.length];
+            if (prev) {
+              const resume = !audioElRef.current?.paused;
+              setAudioSession((s) => (s ? { ...s, file: prev } : s));
+              ensureAudioSrc(prev.id, resume);
+            }
+          }}
+          onNext={() => {
+            const list = audioSession.siblings.filter((f) => f.kind === "audio");
+            if (list.length < 2) return;
+            const idx = list.findIndex((f) => f.id === audioSession.file.id);
+            const next = list[(idx + 1) % list.length];
+            if (next) {
+              const resume = !audioElRef.current?.paused;
+              setAudioSession((s) => (s ? { ...s, file: next } : s));
+              ensureAudioSrc(next.id, resume);
+            }
+          }}
+          onClose={() => {
+            const el = audioElRef.current;
+            if (el) {
+              el.pause();
+              el.removeAttribute("src");
+              el.load();
+            }
+            setAudioSession(null);
+            setAudioPlaying(false);
+          }}
+        />
+      )}
       {ctx && (
         <ContextMenu
           x={ctx.x}
@@ -1276,6 +1989,45 @@ export function DriveApp({
           autoFocus
           onEnter={() => void submitCreateFolder()}
         />
+      </Dialog>
+
+      <Dialog
+        open={importDialog}
+        title="链接导入"
+        description="从公网 HTTPS 直链导入到当前目录（由 Notion 拉取，无需本机上传）"
+        onClose={() => !dialogBusy && setImportDialog(false)}
+        footer={
+          <>
+            <BtnGhost onClick={() => setImportDialog(false)}>取消</BtnGhost>
+            <BtnPrimary
+              onClick={() => void submitImportUrl()}
+              disabled={dialogBusy || !importUrl.trim()}
+            >
+              {dialogBusy ? "导入中…" : "开始导入"}
+            </BtnPrimary>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <DialogInput
+            label="文件链接"
+            value={importUrl}
+            onChange={setImportUrl}
+            placeholder="https://example.com/file.zip"
+            autoFocus
+            onEnter={() => void submitImportUrl()}
+          />
+          <DialogInput
+            label="保存文件名（可选）"
+            value={importName}
+            onChange={setImportName}
+            placeholder="不填则从链接自动识别"
+          />
+          <p className="text-[11px] leading-relaxed text-slate-400">
+            须为公网可访问的 https 直链；内网 / 需登录的链接通常无法导入。受 Notion
+            文件类型与大小限制。
+          </p>
+        </div>
       </Dialog>
 
       <Dialog
