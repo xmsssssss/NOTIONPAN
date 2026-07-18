@@ -62,6 +62,8 @@ Single-user · Docker-ready · No extra cloud beyond your Notion workspace
 <summary><b>Docker</b> — recommended</summary>
 
 ```bash
+git clone https://github.com/xmsssssss/NOTIONPAN.git
+cd NOTIONPAN
 cp .env.example .env
 # change SESSION_SECRET before exposing the service
 
@@ -80,6 +82,8 @@ docker compose up -d --build
 <summary><b>From source</b> — Node.js 22+</summary>
 
 ```bash
+git clone https://github.com/xmsssssss/NOTIONPAN.git
+cd NOTIONPAN
 npm install
 cp .env.example .env.local
 npm run dev          # → http://localhost:3000
