@@ -1,15 +1,18 @@
 import type { Client } from "@notionhq/client";
 import {
+  abortIndexFullSync,
+  beginIndexFullSync,
   driveFileToRow,
   getIndexBackend,
   getMeta,
   indexCount,
+  mergeConcurrentIndexWrites,
   replaceAllIndex,
   setMeta,
   type IndexRow,
 } from "./db";
 import type { DriveFile, FileKind } from "./types";
-import { detectKind, sanitizeFolder } from "./utils";
+import { detectKind, normalizeNotionId, sanitizeFolder } from "./utils";
 
 const FOLDER_MARKER = ".folder";
 const FOLDER_MIME = "inode/directory";
@@ -47,7 +50,7 @@ function pageToIndexFile(page: PageLike): DriveFile {
   const mimeType = propRichText(page, "MIME") || "application/octet-stream";
   const kind = (propSelect(page, "Type") as FileKind) || detectKind(mimeType, name);
   return {
-    id: page.id,
+    id: normalizeNotionId(page.id) || page.id,
     name,
     size: propNumber(page, "Size"),
     mimeType,
@@ -99,16 +102,27 @@ export async function fullSyncFromNotion(
   if (syncPromise) return syncPromise;
 
   syncPromise = (async () => {
-    const pages = await queryAllNotionPages(notion, queryPages);
-    const rows: IndexRow[] = pages.map((page) => {
-      const file = pageToIndexFile(page);
-      return driveFileToRow(file, isFolderMarkerFile(file));
-    });
-    replaceAllIndex(rows);
-    const syncedAt = new Date().toISOString();
-    setMeta("last_sync_at", syncedAt);
-    setMeta("last_sync_count", String(rows.length));
-    return { count: rows.length, syncedAt };
+    beginIndexFullSync();
+    let merged = false;
+    try {
+      const pages = await queryAllNotionPages(notion, queryPages);
+      const snapshot: IndexRow[] = pages.map((page) => {
+        const file = pageToIndexFile(page);
+        return driveFileToRow(file, isFolderMarkerFile(file));
+      });
+      // 合并同步窗口内的上传/webhook 写入，避免 replace 冲掉
+      // merge 与 replace 之间无 await，同进程内不会插入其它 upsert
+      const rows = mergeConcurrentIndexWrites(snapshot);
+      merged = true;
+      replaceAllIndex(rows);
+      const syncedAt = new Date().toISOString();
+      setMeta("last_sync_at", syncedAt);
+      setMeta("last_sync_count", String(rows.length));
+      return { count: rows.length, syncedAt };
+    } catch (e) {
+      if (!merged) abortIndexFullSync();
+      throw e;
+    }
   })();
 
   try {

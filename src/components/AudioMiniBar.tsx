@@ -25,7 +25,7 @@ export function AudioMiniBar({
   onClose: () => void;
 }) {
   return (
-    <div className="audio-mini-offset fixed z-50 flex max-w-[min(100vw-1.5rem,22rem)] items-center gap-1 rounded-2xl border border-slate-200/90 bg-white/95 px-2 py-1.5 shadow-xl shadow-slate-300/40 backdrop-blur-md sm:max-w-sm">
+    <div className="audio-mini-offset fixed z-50 flex items-center gap-1 rounded-2xl border border-slate-200/90 bg-white/95 px-2 py-1.5 shadow-xl shadow-slate-300/40 backdrop-blur-md sm:max-w-sm">
       <button
         type="button"
         onClick={onExpand}

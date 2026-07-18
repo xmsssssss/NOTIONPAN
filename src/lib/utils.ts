@@ -94,13 +94,47 @@ export function getExt(filename: string): string {
   return idx >= 0 ? filename.slice(idx + 1).toLowerCase() : "";
 }
 
+/** Notion page/db id：去连字符、小写 */
+export function bareNotionId(id: string): string {
+  return String(id || "")
+    .replace(/-/g, "")
+    .toLowerCase();
+}
+
+/** 规范为 8-4-4-4-12；非 32 位 hex 则原样返回 */
+export function normalizeNotionId(id: string): string {
+  const bare = bareNotionId(id);
+  if (!/^[0-9a-f]{32}$/.test(bare)) return String(id || "");
+  return `${bare.slice(0, 8)}-${bare.slice(8, 12)}-${bare.slice(12, 16)}-${bare.slice(16, 20)}-${bare.slice(20)}`;
+}
+
+export function sameNotionId(a: string, b: string): boolean {
+  const ba = bareNotionId(a);
+  const bb = bareNotionId(b);
+  if (!ba || !bb) return false;
+  return ba === bb;
+}
+
 export function sanitizeFolder(folder?: string | null): string {
   if (!folder) return "/";
   let f = folder.replace(/\\/g, "/").trim();
   if (!f.startsWith("/")) f = `/${f}`;
   f = f.replace(/\/+/g, "/");
-  if (f.length > 1 && f.endsWith("/")) f = f.slice(0, -1);
-  return f || "/";
+
+  const parts: string[] = [];
+  for (const seg of f.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length) parts.pop();
+      continue;
+    }
+    // 禁止路径段中的控制字符
+    if (/[\u0000-\u001f\u007f]/.test(seg)) continue;
+    parts.push(seg);
+  }
+
+  if (!parts.length) return "/";
+  return `/${parts.join("/")}`;
 }
 
 export function parentFolder(folder: string): string {

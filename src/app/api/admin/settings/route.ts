@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { publicAppConfig, readAppConfig, writeAppConfig } from "@/lib/app-config";
 import { withAuth } from "@/lib/auth-guard";
+import { getSession } from "@/lib/session";
 import { readEnvConfig, writeEnvConfig, softReloadEnv, ENV_KEYS } from "@/lib/runtime-env";
 import { getSyncStatus } from "@/lib/drive";
 
@@ -78,6 +79,16 @@ export async function PUT(req: NextRequest) {
     }
 
     const next = writeAppConfig(patch as Parameters<typeof writeAppConfig>[0]);
+
+    // 改密后刷新当前会话 version，其它浏览器会话将在下次请求时失效
+    if (typeof patch.passwordHash === "string" && patch.passwordHash) {
+      const session = await getSession();
+      if (session.isLoggedIn) {
+        session.passwordVersion = next.passwordVersion || "0";
+        session.username = next.username;
+        await session.save();
+      }
+    }
 
     // 索引状态可选：保存 env 时不应因索引失败而整请求 500
     let index: ReturnType<typeof getSyncStatus> | null = null;

@@ -22,7 +22,7 @@ export function ThumbImage({
   if (!isImage || failed) {
     return (
       <div className={`flex items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 ${className}`}>
-        <FileIcon kind={kind} className="h-10 w-10 opacity-70" />
+        <FileIcon kind={kind} name={name} className="h-10 w-10 opacity-70" />
       </div>
     );
   }

@@ -331,6 +331,11 @@ export function AdminPage({
   };
 
   const importBackup = async (file: File) => {
+    const ok = window.confirm(
+      `确定导入备份「${file.name}」？\n\n将覆盖当前管理员账号、站点配置与环境变量；若备份含索引也会覆盖本地索引。此操作不可撤销。`,
+    );
+    if (!ok) return;
+
     setBusy(true);
     flash(null);
     try {

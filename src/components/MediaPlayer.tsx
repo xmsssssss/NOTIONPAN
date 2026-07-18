@@ -315,7 +315,7 @@ export function MediaPlayer({
       ref={shellRef}
       className={
         kind === "video"
-          ? "relative mx-auto flex h-full max-h-full w-full max-w-3xl items-center justify-center overflow-hidden"
+          ? "relative flex h-full min-h-0 w-full max-w-none flex-1 items-center justify-center overflow-hidden sm:max-w-3xl"
           : "relative mx-auto w-full max-w-md overflow-hidden"
       }
       onMouseEnter={() => setHover(true)}
@@ -323,7 +323,7 @@ export function MediaPlayer({
       onTouchStart={() => setHover(true)}
     >
       {kind === "video" ? (
-        <div className="relative aspect-video max-h-full w-full overflow-hidden bg-black sm:rounded-lg sm:shadow-lg sm:ring-1 sm:ring-slate-200">
+        <div className="relative h-full min-h-0 w-full overflow-hidden bg-black sm:aspect-video sm:h-auto sm:max-h-full sm:rounded-lg sm:shadow-lg sm:ring-1 sm:ring-slate-200">
           <video
             ref={setMediaRef as React.RefCallback<HTMLVideoElement>}
             src={src}
@@ -350,8 +350,8 @@ export function MediaPlayer({
               onClick={() => void togglePlay()}
               className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20"
             >
-              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/95 text-slate-800 shadow-xl transition active:scale-95 sm:h-16 sm:w-16 hover:scale-105">
-                <svg className="ml-1 h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="currentColor">
+              <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/95 text-slate-800 shadow-xl transition active:scale-95 sm:h-16 sm:w-16 hover:scale-105">
+                <svg className="ml-1 h-7 w-7 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               </span>
@@ -361,16 +361,18 @@ export function MediaPlayer({
           {subtitleText && (
             <div
               className={`np-sub-layer pointer-events-none absolute inset-x-0 z-10 flex justify-center px-3 transition-[bottom] duration-200 sm:px-6 ${
-                hover || !playing ? "bottom-[4.75rem] sm:bottom-[4.25rem]" : "bottom-5 sm:bottom-6"
+                hover || !playing
+                  ? "bottom-[5.5rem] sm:bottom-[4.25rem]"
+                  : "bottom-8 sm:bottom-6"
               }`}
             >
-              <div className="np-sub-text max-w-[min(92%,42rem)] whitespace-pre-line text-center text-[14px] font-medium leading-snug sm:text-[16px] md:text-[17px]">
+              <div className="np-sub-text max-w-[min(92%,42rem)] whitespace-pre-line text-center text-[15px] font-medium leading-snug sm:text-[16px] md:text-[17px]">
                 {subtitleText}
               </div>
             </div>
           )}
           <div
-            className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-12 transition sm:px-4 sm:pb-3 sm:pt-10 ${
+            className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-14 transition sm:px-4 sm:pb-3 sm:pt-10 ${
               hover || !playing ? "opacity-100" : "opacity-100 sm:opacity-0"
             }`}
           >
@@ -672,6 +674,7 @@ function Controls({
             </svg>
           )}
         </button>
+        {/* 手机隐藏音量条（系统音量键更常用），桌面保留 */}
         <input
           type="range"
           min={0}
@@ -679,7 +682,7 @@ function Controls({
           step={0.01}
           value={muted ? 0 : volume}
           onChange={(e) => onVolume(Number(e.target.value))}
-          className="h-1 w-12 shrink-0 cursor-pointer accent-sky-500 sm:w-16"
+          className="hidden h-1 w-12 shrink-0 cursor-pointer accent-sky-500 sm:block sm:w-16"
           title="音量"
         />
 

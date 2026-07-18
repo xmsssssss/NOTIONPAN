@@ -86,6 +86,27 @@ export function serializeEnv(map: Record<string, string>): string {
   return lines.join("\n") + "\n";
 }
 
+/**
+ * 仅来自「进程启动 / 系统环境」的键值，不受 data/.env.local 覆盖污染。
+ * softReload 时用它恢复，避免已删除的 runtime 键仍从 process.env 读到旧值。
+ */
+const bootEnvSnapshot: Record<string, string | undefined> = {};
+for (const key of ENV_KEYS) {
+  bootEnvSnapshot[key] = process.env[key];
+}
+
+function applyOverridesToProcessEnv() {
+  for (const key of ENV_KEYS) {
+    if (overrides[key] != null && overrides[key] !== "") {
+      process.env[key] = overrides[key];
+    } else {
+      const boot = bootEnvSnapshot[key];
+      if (boot != null && boot !== "") process.env[key] = boot;
+      else delete process.env[key];
+    }
+  }
+}
+
 export function ensureRuntimeEnvLoaded() {
   if (loaded) return;
   loaded = true;
@@ -93,10 +114,10 @@ export function ensureRuntimeEnvLoaded() {
     const p = envFilePath();
     if (fs.existsSync(p)) {
       overrides = parseEnvText(fs.readFileSync(p, "utf8"));
-      for (const [k, v] of Object.entries(overrides)) {
-        if (v) process.env[k] = v;
-      }
+    } else {
+      overrides = {};
     }
+    applyOverridesToProcessEnv();
   } catch {
     // ignore
   }
@@ -105,7 +126,14 @@ export function ensureRuntimeEnvLoaded() {
 export function getRuntimeEnv(name: string): string | undefined {
   ensureRuntimeEnvLoaded();
   if (overrides[name] != null && overrides[name] !== "") return overrides[name];
-  return process.env[name];
+  // 启动时系统 env（compose / shell）仍可读；runtime 文件里删掉的键不再残留
+  const boot = bootEnvSnapshot[name as EnvKey];
+  if (boot != null && boot !== "") return boot;
+  // 非 ENV_KEYS 或启动后外部注入
+  if (!(ENV_KEYS as readonly string[]).includes(name)) {
+    return process.env[name];
+  }
+  return undefined;
 }
 
 export function getRuntimeEnvRequired(name: string): string {
@@ -154,11 +182,9 @@ export function writeEnvConfig(input: Record<string, string>): {
     const val = String(input[key] ?? "").trim();
     // empty means keep old for secrets if already set
     if (!val) {
-      if (
-        key === "NOTION_API_KEY" ||
-        key === "SESSION_SECRET" ||
-        key === "NOTION_WEBHOOK_TOKEN"
-      ) {
+      // API Key / Session：空串表示「不修改」
+      // Webhook token：空串表示清空（便于重新验证 Notion Webhook）
+      if (key === "NOTION_API_KEY" || key === "SESSION_SECRET") {
         continue;
       }
       delete current[key];
@@ -183,6 +209,12 @@ export function writeEnvConfig(input: Record<string, string>): {
 export function softReloadEnv(): { keys: string[] } {
   loaded = false;
   overrides = {};
+  // 先按启动快照清掉 runtime 写入的 process.env，再重新加载文件
+  for (const key of ENV_KEYS) {
+    const boot = bootEnvSnapshot[key];
+    if (boot != null && boot !== "") process.env[key] = boot;
+    else delete process.env[key];
+  }
   ensureRuntimeEnvLoaded();
   return { keys: Object.keys(overrides) };
 }

@@ -46,6 +46,17 @@ type Health = {
   } | null;
 };
 
+type SortKey = "name" | "size" | "kind" | "createdTime";
+type SortDir = "asc" | "desc";
+
+const KIND_SORT_ORDER: Record<string, number> = {
+  image: 0,
+  video: 1,
+  audio: 2,
+  pdf: 3,
+  file: 4,
+};
+
 type CtxTarget =
   | { type: "blank" }
   | { type: "file"; file: DriveFile }
@@ -62,7 +73,7 @@ type UploadTask = {
   name: string;
   size: number;
   progress: number;
-  status: "pending" | "uploading" | "done" | "error" | "skipped";
+  status: "pending" | "uploading" | "done" | "error" | "skipped" | "cancelled";
   error?: string;
   /** 进行中阶段文案（如「同步到 Notion…」） */
   phaseLabel?: string;
@@ -152,43 +163,6 @@ export function DriveApp({
     }
   }, []);
 
-  const openPreview = useCallback(
-    (file: DriveFile) => {
-      setPreview(file);
-      if (file.kind === "audio") {
-        // siblings 必须是当前目录完整列表（含 .lrc），播放列表再在 PreviewModal 里过滤
-        const folderFiles = files.length ? files : [file];
-        const wasPlaying = audioElRef.current ? !audioElRef.current.paused : autoPlay;
-        setAudioSession((s) => {
-          if (s && (s.file.id === file.id || s.minimized)) {
-            return {
-              ...s,
-              file,
-              minimized: false,
-              siblings: folderFiles,
-            };
-          }
-          return {
-            file,
-            siblings: folderFiles,
-            minimized: false,
-            playMode: s?.playMode || "once",
-          };
-        });
-        // 同一常驻 audio：展开不 pause，只保证 src
-        ensureAudioSrc(file.id, wasPlaying || autoPlay);
-      } else if (file.kind === "video") {
-        // 预览视频时暂停后台音乐，避免叠音
-        const el = audioElRef.current;
-        if (el && !el.paused) {
-          el.pause();
-          setAudioPlaying(false);
-        }
-      }
-    },
-    [files, autoPlay, ensureAudioSrc],
-  );
-
   // 曲目变化时同步 src；模式变化只改 loop，不强制 play（避免手动暂停后切模式又播起来）
   const prevAudioFileIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -235,6 +209,8 @@ export function DriveApp({
   >([]);
   const [viewMode, setViewMode] = useState<"list" | "gallery">("list");
   const [viewReady, setViewReady] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("createdTime");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [fabOpen, setFabOpen] = useState(false);
   const fabRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -271,6 +247,12 @@ export function DriveApp({
     try {
       const saved = window.localStorage.getItem("notionpan-view");
       if (saved === "gallery" || saved === "list") setViewMode(saved);
+      const sk = window.localStorage.getItem("notionpan-sort-key");
+      if (sk === "name" || sk === "size" || sk === "kind" || sk === "createdTime") {
+        setSortKey(sk);
+      }
+      const sd = window.localStorage.getItem("notionpan-sort-dir");
+      if (sd === "asc" || sd === "desc") setSortDir(sd);
     } catch {
       // ignore
     }
@@ -281,10 +263,130 @@ export function DriveApp({
     if (!viewReady) return;
     try {
       window.localStorage.setItem("notionpan-view", viewMode);
+      window.localStorage.setItem("notionpan-sort-key", sortKey);
+      window.localStorage.setItem("notionpan-sort-dir", sortDir);
     } catch {
       // ignore
     }
-  }, [viewMode, viewReady]);
+  }, [viewMode, sortKey, sortDir, viewReady]);
+
+  const sortedFiles = useMemo(() => {
+    const list = files.slice();
+    const dir = sortDir === "asc" ? 1 : -1;
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "name") {
+        cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true, sensitivity: "base" });
+      } else if (sortKey === "size") {
+        cmp = (a.size || 0) - (b.size || 0);
+      } else if (sortKey === "kind") {
+        const ka = KIND_SORT_ORDER[a.kind] ?? 9;
+        const kb = KIND_SORT_ORDER[b.kind] ?? 9;
+        cmp = ka - kb;
+        if (cmp === 0) {
+          cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+        }
+      } else {
+        cmp = (a.createdTime || "").localeCompare(b.createdTime || "");
+      }
+      if (cmp === 0) {
+        cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+      }
+      return cmp * dir;
+    });
+    return list;
+  }, [files, sortKey, sortDir]);
+
+  const sortedFolders = useMemo(() => {
+    const list = folders.slice();
+    if (sortKey === "name") {
+      list.sort((a, b) => {
+        const cmp = a.localeCompare(b, "zh-CN", { numeric: true, sensitivity: "base" });
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+    } else {
+      // 其它字段文件夹无值：保持名称升序，始终排在文件前
+      list.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+    }
+    return list;
+  }, [folders, sortKey, sortDir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // 名称/类型默认升序，大小/时间默认降序
+      setSortDir(key === "name" || key === "kind" ? "asc" : "desc");
+    }
+  };
+
+  const sortArrow = (key: SortKey) => {
+    if (sortKey !== key) return "";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  };
+
+  /** 开播时所在目录；切走后不再用 sortedFiles 覆盖 playlist */
+  const audioPlaylistFolderRef = useRef<string | null>(null);
+
+  const openPreview = useCallback(
+    (file: DriveFile) => {
+      setPreview(file);
+      if (file.kind === "audio") {
+        // siblings 冻结为开播时目录列表（含 .lrc），播放列表再在 PreviewModal 里过滤
+        const folderFiles = sortedFiles.length ? sortedFiles : [file];
+        const wasPlaying = audioElRef.current ? !audioElRef.current.paused : autoPlay;
+        audioPlaylistFolderRef.current = sanitizeFolder(folder);
+        setAudioSession((s) => {
+          if (s && (s.file.id === file.id || s.minimized)) {
+            return {
+              ...s,
+              file,
+              minimized: false,
+              // 最小化恢复：保留原 playlist；新开曲：用当前目录
+              siblings: s.minimized && s.siblings.length ? s.siblings : folderFiles,
+            };
+          }
+          return {
+            file,
+            siblings: folderFiles,
+            minimized: false,
+            playMode: s?.playMode || "once",
+          };
+        });
+        // 同一常驻 audio：展开不 pause，只保证 src
+        ensureAudioSrc(file.id, wasPlaying || autoPlay);
+      } else if (file.kind === "video") {
+        // 预览视频时暂停后台音乐，避免叠音
+        const el = audioElRef.current;
+        if (el && !el.paused) {
+          el.pause();
+          setAudioPlaying(false);
+        }
+      }
+    },
+    [sortedFiles, folder, autoPlay, ensureAudioSrc],
+  );
+
+  // 仅当仍在「开播时的目录」且列表只是同目录重排时，才同步 siblings 顺序；
+  // 切文件夹 / 搜索时 sortedFiles 变了也不要改播放列表
+  useEffect(() => {
+    if (!audioSession) {
+      audioPlaylistFolderRef.current = null;
+      return;
+    }
+    if (audioPlaylistFolderRef.current === null) {
+      audioPlaylistFolderRef.current = sanitizeFolder(folder);
+      return;
+    }
+    if (sanitizeFolder(folder) !== audioPlaylistFolderRef.current) return;
+    if (!sortedFiles.length) return;
+    // 同目录：若当前曲仍在列表中，则按最新排序刷新 siblings
+    const stillHere = sortedFiles.some((f) => f.id === audioSession.file.id);
+    if (!stillHere) return;
+    setAudioSession((s) => (s ? { ...s, siblings: sortedFiles } : s));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedFiles, folder]);
 
   const crumbs = useMemo(() => {
     const f = sanitizeFolder(folder);
@@ -309,7 +411,10 @@ export function DriveApp({
     }
   }, []);
 
+  const loadFilesSeqRef = useRef(0);
+
   const loadFiles = useCallback(async (opts?: { refresh?: boolean }) => {
+    const seq = ++loadFilesSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -318,6 +423,8 @@ export function DriveApp({
       if (opts?.refresh) params.set("refresh", "1");
       const res = await fetch(`/api/files?${params}`);
       const data = await res.json();
+      // 过期响应：用户已切到其它目录/搜索，丢弃
+      if (seq !== loadFilesSeqRef.current) return;
       if (!res.ok) {
         // 展示后端真实错误，便于排查
         throw new Error(data.error || data.message || `加载失败 (${res.status})`);
@@ -326,11 +433,12 @@ export function DriveApp({
       setFiles(result.files || []);
       setFolders(result.folders || []);
     } catch (e) {
+      if (seq !== loadFilesSeqRef.current) return;
       setError(e instanceof Error ? e.message : "加载失败");
       setFiles([]);
       setFolders([]);
     } finally {
-      setLoading(false);
+      if (seq === loadFilesSeqRef.current) setLoading(false);
     }
   }, [folder, search]);
 
@@ -345,6 +453,8 @@ export function DriveApp({
   const patchUploadTask = useCallback((id: string, patch: Partial<UploadTask>) => {
     setUploadTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
+
+  const uploadAbortMapRef = useRef<Map<string, () => void>>(new Map());
 
   const runUploadTask = useCallback(
     async (
@@ -363,14 +473,16 @@ export function DriveApp({
         file,
         folder: targetFolder,
       });
-      try {
-        const result = await uploadViaServer(file, targetFolder, (pct, info) => {
-          patchUploadTask(taskId, {
-            progress: pct,
-            phaseLabel: info?.message || (pct < 40 ? "上传到服务器…" : "同步到 Notion…"),
-          });
-          onProgress?.(pct);
+      const handle = uploadViaServer(file, targetFolder, (pct, info) => {
+        patchUploadTask(taskId, {
+          progress: pct,
+          phaseLabel: info?.message || (pct < 40 ? "上传到服务器…" : "同步到 Notion…"),
         });
+        onProgress?.(pct);
+      });
+      uploadAbortMapRef.current.set(taskId, handle.abort);
+      try {
+        const result = await handle.promise;
         patchUploadTask(taskId, {
           status: result.skipped ? "skipped" : "done",
           progress: 100,
@@ -381,8 +493,9 @@ export function DriveApp({
         return true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : `上传失败: ${file.name}`;
+        const cancelled = /取消|abort|AbortError/i.test(msg);
         patchUploadTask(taskId, {
-          status: "error",
+          status: cancelled ? "cancelled" : "error",
           error: msg,
           phaseLabel: undefined,
           kind: "file",
@@ -390,10 +503,24 @@ export function DriveApp({
           folder: targetFolder,
         });
         return false;
+      } finally {
+        uploadAbortMapRef.current.delete(taskId);
       }
     },
     [patchUploadTask],
   );
+
+  const cancelUploadTask = useCallback((taskId: string) => {
+    const abort = uploadAbortMapRef.current.get(taskId);
+    if (abort) abort();
+    else {
+      patchUploadTask(taskId, {
+        status: "cancelled",
+        error: "已取消",
+        phaseLabel: undefined,
+      });
+    }
+  }, [patchUploadTask]);
 
   const runImportUrlTask = useCallback(
     async (
@@ -585,7 +712,8 @@ export function DriveApp({
   };
 
   const canRetryTask = (t: UploadTask) =>
-    t.status === "error" && (Boolean(t.file) || Boolean(t.importUrl));
+    (t.status === "error" || t.status === "cancelled") &&
+    (Boolean(t.file) || Boolean(t.importUrl));
 
   const retryUploadTask = async (task: UploadTask) => {
     if (!canRetryTask(task) || uploading) return;
@@ -790,6 +918,22 @@ export function DriveApp({
     }
   };
 
+  const stopAudioSession = useCallback(() => {
+    const el = audioElRef.current;
+    if (el) {
+      el.pause();
+      el.removeAttribute("src");
+      try {
+        el.load();
+      } catch {
+        // ignore
+      }
+    }
+    setAudioPlaying(false);
+    setAudioSession(null);
+    audioPlaylistFolderRef.current = null;
+  }, []);
+
   const submitDelete = async () => {
     if (!deleteDialog) return;
     setDialogBusy(true);
@@ -798,8 +942,18 @@ export function DriveApp({
       const res = await fetch(`/api/files/${deleteDialog.id}`, { method: "DELETE" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "删除失败");
-      setFiles((prev) => prev.filter((f) => f.id !== deleteDialog.id));
-      if (preview?.id === deleteDialog.id) setPreview(null);
+      const deletedId = deleteDialog.id;
+      setFiles((prev) => prev.filter((f) => f.id !== deletedId));
+      if (preview?.id === deletedId) setPreview(null);
+      // 删除正在播 / 播放列表中的文件
+      if (audioSessionRef.current?.file.id === deletedId) {
+        stopAudioSession();
+      } else {
+        setAudioSession((s) => {
+          if (!s) return s;
+          return { ...s, siblings: s.siblings.filter((f) => f.id !== deletedId) };
+        });
+      }
       setDeleteDialog(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "删除失败");
@@ -1063,17 +1217,34 @@ export function DriveApp({
         paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
       }}
     >
-      <header className="mb-3 flex shrink-0 items-center gap-3 sm:mb-6">
+      <header className="mb-2 flex shrink-0 items-center gap-2.5 sm:mb-6 sm:gap-3">
         <SiteIcon letter={siteIcon} />
         <div className="min-w-0 flex-1">
-          <h1 className="truncate bg-gradient-to-r from-slate-800 via-blue-700 to-teal-600 bg-clip-text text-lg font-bold tracking-tight text-transparent sm:text-2xl">
+          <h1 className="truncate bg-gradient-to-r from-slate-800 via-blue-700 to-teal-600 bg-clip-text text-base font-bold tracking-tight text-transparent sm:text-2xl">
             {siteTitle}
           </h1>
-          <p className="truncate text-xs text-[var(--muted)] sm:text-sm">
-            <span className="hidden sm:inline">{siteDescription}</span>
-            <span className="sm:hidden">{username || siteDescription}</span>
-            {username ? <span className="hidden sm:inline">{` · ${username}`}</span> : ""}
-          </p>
+          <div className="flex min-w-0 items-baseline gap-2 text-xs text-[var(--muted)] sm:text-sm">
+            <p className="min-w-0 flex-1 truncate">
+              <span className="hidden sm:inline">{siteDescription}</span>
+              <span className="sm:hidden">{username || siteDescription}</span>
+              {username ? <span className="hidden sm:inline">{` · ${username}`}</span> : ""}
+            </p>
+            {health?.uploadLimit?.maxLabel && (
+              <p
+                className="hidden max-w-[55%] shrink-0 truncate text-right text-[11px] text-slate-400 sm:block"
+                title={`Notion 单文件上限：${health.uploadLimit.maxLabel}${
+                  health.uploadLimit.workspaceName
+                    ? ` · ${health.uploadLimit.workspaceName}`
+                    : ""
+                }`}
+              >
+                Notion 单文件上限：{health.uploadLimit.maxLabel}
+                {health.uploadLimit.workspaceName
+                  ? ` · ${health.uploadLimit.workspaceName}`
+                  : ""}
+              </p>
+            )}
+          </div>
         </div>
         <input
           ref={fileInputRef}
@@ -1092,30 +1263,22 @@ export function DriveApp({
             : " 可在后台「索引同步」修复 Schema，或确认 Integration 已连接该数据库。"}
         </div>
       )}
-      {health?.uploadLimit?.maxLabel && (
-        <div className="mb-2 hidden shrink-0 text-[11px] text-slate-400 sm:mb-3 sm:block">
-          Notion 单文件上限：{health.uploadLimit.maxLabel}
-          {health.uploadLimit.workspaceName
-            ? ` · ${health.uploadLimit.workspaceName}`
-            : ""}
-        </div>
-      )}
 
-      <div className="mb-2 flex shrink-0 flex-col gap-2.5 sm:mb-4 sm:flex-row sm:items-center sm:gap-3">
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="mb-2 flex shrink-0 flex-col gap-2 sm:mb-4 sm:flex-row sm:items-center sm:gap-3">
+        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[15px] sm:text-base [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {crumbs.map((c, i) => (
             <span key={c.path} className="flex shrink-0 items-center gap-1">
               {i > 0 && <span className="text-[var(--muted)]">/</span>}
               <button
                 onClick={() => setFolder(c.path)}
-                className={`max-w-[8rem] truncate rounded-md px-1.5 py-1.5 hover:bg-white/80 sm:max-w-[10rem] sm:py-0.5 ${
+                className={`max-w-[9rem] truncate rounded-md px-1.5 py-1.5 hover:bg-white/80 sm:max-w-[12rem] sm:py-0.5 ${
                   i === crumbs.length - 1 ? "font-semibold text-[var(--text)]" : "text-[var(--muted)]"
                 }`}
               >
                 {i === 0 ? (
                   <span className="inline-flex items-center gap-1">
-                    <IconHome className="h-3.5 w-3.5" />
-                    <span className="sm:inline">{c.label}</span>
+                    <IconHome className="h-4 w-4" />
+                    <span>{c.label}</span>
                   </span>
                 ) : (
                   c.label
@@ -1126,31 +1289,33 @@ export function DriveApp({
         </nav>
 
         <div className="flex items-center gap-2">
-          <div className="inline-flex shrink-0 rounded-xl border border-[var(--border)] bg-white/90 p-1 shadow-sm">
+          <div className="inline-flex h-10 shrink-0 items-center rounded-xl border border-[var(--border)] bg-white/90 p-1 shadow-sm box-border">
             <button
               type="button"
               onClick={() => setViewMode("list")}
-              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-xs transition sm:py-1.5 ${
+              className={`inline-flex h-full items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition sm:px-2.5 ${
                 viewMode === "list"
                   ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
               title="列表模式"
+              aria-label="列表模式"
             >
-              <IconList className="h-3.5 w-3.5" />
-              <span className="hidden xs:inline sm:inline">列表</span>
+              <IconList className="h-4 w-4" />
+              <span className="hidden sm:inline">列表</span>
             </button>
             <button
               type="button"
               onClick={() => setViewMode("gallery")}
-              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-xs transition sm:py-1.5 ${
+              className={`inline-flex h-full items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition ${
                 viewMode === "gallery"
                   ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
               title="画廊模式（缩略图）"
+              aria-label="画廊模式"
             >
-              <IconGrid className="h-3.5 w-3.5" />
+              <IconGrid className="h-4 w-4" />
               <span className="hidden sm:inline">画廊</span>
             </button>
           </div>
@@ -1171,8 +1336,12 @@ export function DriveApp({
                   setQuery(v);
                   if (!v.trim() && search) setSearch("");
                 }}
-                placeholder="搜索…"
-                className="w-full rounded-xl border border-[var(--border)] bg-white/90 py-2.5 pl-8 pr-8 text-sm shadow-sm outline-none focus:border-[var(--accent)] sm:w-56 sm:py-2"
+                enterKeyHint="search"
+                inputMode="search"
+                autoComplete="off"
+                autoCorrect="off"
+                placeholder="搜索文件…"
+                className="box-border h-10 w-full rounded-xl border border-[var(--border)] bg-white/90 py-0 pl-8 pr-8 text-base shadow-sm outline-none focus:border-[var(--accent)] sm:w-56 sm:text-sm"
               />
               {(query || search) && (
                 <button
@@ -1182,7 +1351,7 @@ export function DriveApp({
                     setQuery("");
                     setSearch("");
                   }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  className="absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
                 >
                   <IconClose className="h-3.5 w-3.5" />
                 </button>
@@ -1190,24 +1359,13 @@ export function DriveApp({
             </div>
             <button
               type="submit"
-              className="shrink-0 rounded-xl border border-[var(--border)] bg-white/90 px-3 py-2.5 text-sm shadow-sm hover:bg-[var(--panel-2)] sm:py-2"
+              className="box-border hidden h-10 shrink-0 rounded-xl border border-[var(--border)] bg-white/90 px-3 text-sm shadow-sm hover:bg-[var(--panel-2)] sm:inline-flex sm:items-center"
             >
               搜索
             </button>
           </form>
         </div>
       </div>
-
-      {folder !== "/" && (
-        <div className="mb-4">
-          <button
-            onClick={() => setFolder(parentFolder(folder))}
-            className="rounded-lg border border-[var(--border)] bg-white/90 px-2.5 py-1.5 text-xs text-[var(--muted)] shadow-sm hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
-          >
-            ← 上级目录
-          </button>
-        </div>
-      )}
 
       {search && (
         <div className="mb-2 flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900 sm:mb-4 sm:px-4 sm:py-2.5 sm:text-sm">
@@ -1247,9 +1405,34 @@ export function DriveApp({
         }`}
       >
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+        {/* 手机无表格表头：粘性排序栏 */}
+        {!loading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
+          <div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/95 px-2 py-1 text-[11px] text-slate-500 backdrop-blur-sm sm:hidden">
+            {(
+              [
+                ["name", "名称"],
+                ["size", "大小"],
+                ["kind", "类型"],
+                ["createdTime", "时间"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => toggleSort(key)}
+                className={`min-h-0 flex-1 rounded-md px-1 py-2 text-center font-medium active:bg-white ${
+                  sortKey === key ? "bg-white text-sky-600 shadow-sm" : ""
+                }`}
+              >
+                {label}
+                {sortArrow(key)}
+              </button>
+            ))}
+          </div>
+        )}
         {loading ? (
           <div className="flex h-full min-h-48 items-center justify-center text-[var(--muted)]">加载中…</div>
-        ) : folders.length === 0 && files.length === 0 ? (
+        ) : sortedFolders.length === 0 && sortedFiles.length === 0 ? (
           <div
             className="flex h-full min-h-48 cursor-pointer flex-col items-center justify-center gap-2 px-4 text-[var(--muted)]"
             onClick={() => fileInputRef.current?.click()}
@@ -1266,7 +1449,7 @@ export function DriveApp({
         ) : viewMode === "gallery" ? (
           <div className="p-2.5 sm:p-4">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5">
-              {folders.map((name) => (
+              {sortedFolders.map((name) => (
                 <button
                   key={`folder-${name}`}
                   type="button"
@@ -1282,7 +1465,7 @@ export function DriveApp({
                   <div className="px-2.5 pb-2 text-xs text-slate-400 sm:px-3">文件夹</div>
                 </button>
               ))}
-              {files.map((file) => (
+              {sortedFiles.map((file) => (
                 <button
                   key={file.id}
                   type="button"
@@ -1311,10 +1494,10 @@ export function DriveApp({
           <>
             {/* 手机：卡片列表 */}
             <div className="divide-y divide-slate-100 sm:hidden">
-              {folders.map((name) => (
+              {sortedFolders.map((name) => (
                 <div
                   key={`m-folder-${name}`}
-                  className="flex items-center gap-3 px-3 py-3 active:bg-slate-50"
+                  className="flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50"
                   onClick={() => setFolder(joinFolder(folder, name))}
                   onContextMenu={(e) => openContext(e, { type: "folder", name })}
                   {...bindLongPress({ type: "folder", name })}
@@ -1323,16 +1506,39 @@ export function DriveApp({
                     <IconFolder className="h-6 w-6 text-amber-500" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-slate-800">{name}</div>
+                    <div className="truncate text-[15px] font-medium text-slate-800">{name}</div>
                     <div className="text-xs text-slate-400">文件夹</div>
                   </div>
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 active:bg-slate-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openContext(
+                        {
+                          preventDefault: () => {},
+                          stopPropagation: () => {},
+                          clientX: e.clientX,
+                          clientY: e.clientY,
+                        },
+                        { type: "folder", name },
+                      );
+                    }}
+                    aria-label="更多"
+                  >
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="12" cy="5" r="1.5" />
+                      <circle cx="12" cy="12" r="1.5" />
+                      <circle cx="12" cy="19" r="1.5" />
+                    </svg>
+                  </button>
                 </div>
               ))}
-              {files.map((file) => (
+              {sortedFiles.map((file) => (
                 <div
                   key={`m-file-${file.id}`}
-                  className="flex items-center gap-3 px-3 py-3 active:bg-slate-50"
-                   onClick={() => openPreview(file)}
+                  className="flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50"
+                  onClick={() => openPreview(file)}
                   onContextMenu={(e) => openContext(e, { type: "file", file })}
                   {...bindLongPress({ type: "file", file })}
                 >
@@ -1345,18 +1551,18 @@ export function DriveApp({
                     />
                   ) : (
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-[var(--accent)]">
-                      <FileIcon kind={file.kind} className="h-6 w-6" />
+                      <FileIcon kind={file.kind} name={file.name} className="h-6 w-6" />
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-slate-800">{file.name}</div>
-                    <div className="text-xs text-slate-400">
-                      {formatBytes(file.size)} · {formatDate(file.createdTime)}
+                    <div className="truncate text-[15px] font-medium text-slate-800">{file.name}</div>
+                    <div className="truncate text-xs text-slate-400">
+                      {formatBytes(file.size)} · {kindLabel(file.kind)} · {formatDate(file.createdTime)}
                     </div>
                   </div>
                   <button
                     type="button"
-                    className="shrink-0 rounded-lg p-2 text-slate-400"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 active:bg-slate-100"
                     onClick={(e) => {
                       e.stopPropagation();
                       openContext(
@@ -1386,15 +1592,55 @@ export function DriveApp({
               <table className="w-full min-w-[640px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-gradient-to-r from-white/60 to-[var(--panel-2)]/80 text-xs uppercase tracking-wide text-[var(--muted)]">
-                    <th className="px-4 py-3 font-medium">名称</th>
-                    <th className="px-4 py-3 font-medium">大小</th>
-                    <th className="px-4 py-3 font-medium">类型</th>
-                    <th className="px-4 py-3 font-medium">上传时间</th>
+                    <th className="px-4 py-3 font-medium">
+                      <button
+                        type="button"
+                        onClick={() => toggleSort("name")}
+                        className={`inline-flex items-center gap-0.5 hover:text-slate-800 ${
+                          sortKey === "name" ? "text-sky-600" : ""
+                        }`}
+                      >
+                        名称{sortArrow("name")}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 font-medium">
+                      <button
+                        type="button"
+                        onClick={() => toggleSort("size")}
+                        className={`inline-flex items-center gap-0.5 hover:text-slate-800 ${
+                          sortKey === "size" ? "text-sky-600" : ""
+                        }`}
+                      >
+                        大小{sortArrow("size")}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 font-medium">
+                      <button
+                        type="button"
+                        onClick={() => toggleSort("kind")}
+                        className={`inline-flex items-center gap-0.5 hover:text-slate-800 ${
+                          sortKey === "kind" ? "text-sky-600" : ""
+                        }`}
+                      >
+                        类型{sortArrow("kind")}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 font-medium">
+                      <button
+                        type="button"
+                        onClick={() => toggleSort("createdTime")}
+                        className={`inline-flex items-center gap-0.5 hover:text-slate-800 ${
+                          sortKey === "createdTime" ? "text-sky-600" : ""
+                        }`}
+                      >
+                        上传时间{sortArrow("createdTime")}
+                      </button>
+                    </th>
                     <th className="px-4 py-3 font-medium text-right">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {folders.map((name) => (
+                  {sortedFolders.map((name) => (
                     <tr
                       key={`folder-${name}`}
                       className="border-b border-[var(--border)]/70 hover:bg-blue-50/60"
@@ -1416,7 +1662,7 @@ export function DriveApp({
                       <td className="px-4 py-3" />
                     </tr>
                   ))}
-                  {files.map((file) => (
+                  {sortedFiles.map((file) => (
                     <tr
                       key={file.id}
                       className="border-b border-[var(--border)]/70 hover:bg-blue-50/60"
@@ -1439,7 +1685,7 @@ export function DriveApp({
                               />
                             ) : (
                               <span className="text-[var(--accent)]">
-                                <FileIcon kind={file.kind} className="h-5 w-5" />
+                                <FileIcon kind={file.kind} name={file.name} className="h-5 w-5" />
                               </span>
                             )}
                           </span>
@@ -1481,13 +1727,26 @@ export function DriveApp({
         </div>
       </div>
 
-      {/* 底部占位，避免列表被 FAB / 上传面板挡住 */}
-      <div className="h-16 shrink-0 sm:h-4" aria-hidden />
+      {/* 底部占位：FAB + 音频迷你条 */}
+      <div
+        className={`shrink-0 sm:h-4 ${audioSession?.minimized ? "h-28" : "h-16"}`}
+        aria-hidden
+      />
+
+      {/* 移动端 FAB 打开时的遮罩 */}
+      {fabOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-[40] bg-slate-900/25 backdrop-blur-[1px] sm:hidden"
+          aria-label="关闭菜单"
+          onClick={() => setFabOpen(false)}
+        />
+      )}
 
       {/* 右下角悬浮菜单（向上展开） */}
       <div ref={fabRef} className="fab-offset fixed z-[45] flex flex-col items-end gap-2">
         {fabOpen && (
-          <div className="mb-1 flex flex-col-reverse items-end gap-2">
+          <div className="mb-1 flex max-h-[min(70dvh,28rem)] flex-col-reverse items-end gap-2 overflow-y-auto overscroll-contain">
             {[
               {
                 id: "new-folder",
@@ -1621,13 +1880,16 @@ export function DriveApp({
                   全部重试
                 </button>
               )}
-              {!uploading && uploadTasks.some((t) => t.status === "error") && (
+              {!uploading &&
+                uploadTasks.some((t) => t.status === "error" || t.status === "cancelled") && (
                 <button
                   type="button"
                   className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-white"
                   onClick={() => {
                     setUploadTasks((prev) => {
-                      const next = prev.filter((t) => t.status !== "error");
+                      const next = prev.filter(
+                        (t) => t.status !== "error" && t.status !== "cancelled",
+                      );
                       if (next.length === 0) setUploadPanelOpen(false);
                       return next;
                     });
@@ -1704,12 +1966,22 @@ export function DriveApp({
                             重试
                           </button>
                         )}
-                        {t.status === "error" && (
+                        {t.status === "uploading" && t.kind !== "url" && (
+                          <button
+                            type="button"
+                            className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-red-600 ring-1 ring-red-200 hover:bg-red-50"
+                            title="取消上传"
+                            onClick={() => cancelUploadTask(t.id)}
+                          >
+                            取消
+                          </button>
+                        )}
+                        {(t.status === "error" || t.status === "cancelled") && (
                           <button
                             type="button"
                             disabled={uploading}
                             className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50"
-                            title="取消并移除该任务"
+                            title="移除该任务"
                             onClick={() => {
                               setUploadTasks((prev) => {
                                 const next = prev.filter((x) => x.id !== t.id);
@@ -1718,7 +1990,7 @@ export function DriveApp({
                               });
                             }}
                           >
-                            取消
+                            移除
                           </button>
                         )}
                         <span
@@ -1729,6 +2001,8 @@ export function DriveApp({
                                 ? "text-amber-600"
                                 : t.status === "error"
                                   ? "text-red-500"
+                                  : t.status === "cancelled"
+                                    ? "text-slate-500"
                                   : t.status === "uploading"
                                     ? "text-sky-600"
                                     : "text-slate-400"
@@ -1740,6 +2014,8 @@ export function DriveApp({
                               ? "跳过"
                               : t.status === "error"
                                 ? "失败"
+                                : t.status === "cancelled"
+                                  ? "已取消"
                                 : t.status === "uploading"
                                   ? t.kind === "url"
                                     ? "导入中"
@@ -1834,8 +2110,8 @@ export function DriveApp({
           file={preview}
           siblings={
             preview.kind === "audio" || preview.kind === "video"
-              ? audioSession?.siblings ?? files
-              : files
+              ? audioSession?.siblings ?? sortedFiles
+              : sortedFiles
           }
           autoPlay={preview.kind === "audio" ? false : autoPlay}
           externalAudio={preview.kind === "audio"}
@@ -1857,10 +2133,14 @@ export function DriveApp({
               const wasPlaying = audioElRef.current ? !audioElRef.current.paused : true;
               setAudioSession((s) =>
                 s
-                  ? { ...s, file: f, siblings: s.siblings.length ? s.siblings : files }
+                  ? {
+                      ...s,
+                      file: f,
+                      siblings: s.siblings.length ? s.siblings : sortedFiles,
+                    }
                   : {
                       file: f,
-                      siblings: files.length ? files : [f],
+                      siblings: sortedFiles.length ? sortedFiles : [f],
                       minimized: false,
                       playMode: "once",
                     },
@@ -1877,7 +2157,7 @@ export function DriveApp({
                       ? { ...s, file: preview, minimized: true }
                       : {
                           file: preview,
-                          siblings: files.length ? files : [preview],
+                          siblings: sortedFiles.length ? sortedFiles : [preview],
                           minimized: true,
                           playMode: "once",
                         },

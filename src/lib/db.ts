@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { DriveFile, FileKind } from "./types";
+import { bareNotionId, normalizeNotionId, sameNotionId } from "./utils";
 
 /**
  * 本地文件索引
@@ -44,6 +45,54 @@ const EMPTY: IndexStore = { version: 1, meta: {}, files: [] };
 let backend: IndexBackend | null = null;
 let sqliteDb: SqliteDb | null = null;
 let jsonCache: IndexStore | null = null;
+
+/** 全量同步期间的并发写入缓冲，replace 后合并，避免冲掉上传/webhook */
+let fullSyncDepth = 0;
+const pendingUpserts = new Map<string, IndexRow>();
+const pendingDeletes = new Set<string>();
+
+export function beginIndexFullSync() {
+  fullSyncDepth += 1;
+  if (fullSyncDepth === 1) {
+    pendingUpserts.clear();
+    pendingDeletes.clear();
+  }
+}
+
+function noteIndexUpsert(row: IndexRow) {
+  if (fullSyncDepth <= 0) return;
+  pendingDeletes.delete(row.id);
+  pendingUpserts.set(row.id, row);
+}
+
+function noteIndexDelete(id: string) {
+  if (fullSyncDepth <= 0) return;
+  pendingUpserts.delete(id);
+  pendingDeletes.add(id);
+}
+
+/** 将并发 upsert/delete 合并进快照后结束一层 full sync */
+export function mergeConcurrentIndexWrites(snapshot: IndexRow[]): IndexRow[] {
+  const map = new Map<string, IndexRow>();
+  for (const row of snapshot) map.set(row.id, row);
+  for (const id of pendingDeletes) map.delete(id);
+  for (const [id, row] of pendingUpserts) map.set(id, row);
+
+  fullSyncDepth = Math.max(0, fullSyncDepth - 1);
+  if (fullSyncDepth === 0) {
+    pendingUpserts.clear();
+    pendingDeletes.clear();
+  }
+  return [...map.values()];
+}
+
+export function abortIndexFullSync() {
+  fullSyncDepth = Math.max(0, fullSyncDepth - 1);
+  if (fullSyncDepth === 0) {
+    pendingUpserts.clear();
+    pendingDeletes.clear();
+  }
+}
 
 function dataDir() {
   const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -222,7 +271,7 @@ export function rowToDriveFile(row: IndexRow): DriveFile {
 
 export function driveFileToRow(file: DriveFile, isFolderMarker = false): IndexRow {
   return {
-    id: file.id,
+    id: normalizeNotionId(file.id),
     name: file.name,
     size: file.size,
     mime_type: file.mimeType,
@@ -280,7 +329,18 @@ export function replaceAllIndex(rows: IndexRow[]) {
 }
 
 export function upsertIndexRow(row: IndexRow) {
+  const normalized: IndexRow = { ...row, id: normalizeNotionId(row.id) };
+  noteIndexUpsert(normalized);
   if (ensureBackend() === "sqlite") {
+    const bare = bareNotionId(normalized.id);
+    // 清理历史 bare/异形 id，避免双行
+    if (bare) {
+      sqliteDb!
+        .prepare(
+          `DELETE FROM files WHERE id != ? AND lower(replace(id, '-', '')) = ?`,
+        )
+        .run(normalized.id, bare);
+    }
     sqliteDb!
       .prepare(
         `
@@ -301,33 +361,49 @@ export function upsertIndexRow(row: IndexRow) {
     `,
       )
       .run(
-        row.id,
-        row.name,
-        row.size,
-        row.mime_type,
-        row.kind,
-        row.folder,
-        row.created_time,
-        row.last_edited_time,
-        row.url,
-        row.is_folder_marker,
+        normalized.id,
+        normalized.name,
+        normalized.size,
+        normalized.mime_type,
+        normalized.kind,
+        normalized.folder,
+        normalized.created_time,
+        normalized.last_edited_time,
+        normalized.url,
+        normalized.is_folder_marker,
       );
     return;
   }
   const store = loadJsonStore();
-  const i = store.files.findIndex((f) => f.id === row.id);
-  if (i >= 0) store.files[i] = row;
-  else store.files.push(row);
+  const bare = bareNotionId(normalized.id);
+  store.files = store.files.filter(
+    (f) => bareNotionId(f.id) !== bare || f.id === normalized.id,
+  );
+  const i = store.files.findIndex((f) => f.id === normalized.id);
+  if (i >= 0) store.files[i] = normalized;
+  else store.files.push(normalized);
   saveJsonStore(store);
 }
 
 export function deleteIndexRow(id: string) {
+  const bare = bareNotionId(id);
+  const canonical = normalizeNotionId(id);
+  noteIndexDelete(canonical);
+  if (bare) noteIndexDelete(bare);
   if (ensureBackend() === "sqlite") {
-    sqliteDb!.prepare("DELETE FROM files WHERE id = ?").run(id);
+    if (bare) {
+      sqliteDb!
+        .prepare(`DELETE FROM files WHERE lower(replace(id, '-', '')) = ?`)
+        .run(bare);
+    } else {
+      sqliteDb!.prepare("DELETE FROM files WHERE id = ?").run(id);
+    }
     return;
   }
   const store = loadJsonStore();
-  store.files = store.files.filter((f) => f.id !== id);
+  store.files = bare
+    ? store.files.filter((f) => bareNotionId(f.id) !== bare)
+    : store.files.filter((f) => f.id !== id);
   saveJsonStore(store);
 }
 

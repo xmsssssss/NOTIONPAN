@@ -1,18 +1,66 @@
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { getIronSession, type SessionOptions } from "iron-session";
 import { cookies } from "next/headers";
+import { getPasswordVersion } from "./app-config";
 import { getRuntimeEnv, ensureRuntimeEnvLoaded } from "./runtime-env";
 
 export type SessionData = {
   isLoggedIn: boolean;
   username: string;
+  /** 与 app-config 中密码版本对齐，改密后旧会话失效 */
+  passwordVersion?: string;
 };
+
+const DEV_FALLBACK_FILE = ".session-secret";
+
+function dataDir() {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function isProductionLike(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.DOCKER === "1" ||
+    process.env.REQUIRE_SESSION_SECRET === "1"
+  );
+}
+
+/** 开发环境：生成并持久化本地密钥，避免使用仓库内公开兜底串 */
+function ensureDevSessionSecret(): string {
+  const p = path.join(dataDir(), DEV_FALLBACK_FILE);
+  try {
+    if (fs.existsSync(p)) {
+      const existing = fs.readFileSync(p, "utf8").trim();
+      if (existing.length >= 32) return existing;
+    }
+  } catch {
+    // ignore
+  }
+  const secret = crypto.randomBytes(32).toString("base64url");
+  try {
+    fs.writeFileSync(p, secret, "utf8");
+  } catch {
+    // 写失败仍返回本次随机值（进程内一致）
+  }
+  return secret;
+}
 
 function sessionPassword(): string {
   ensureRuntimeEnvLoaded();
   const secret = getRuntimeEnv("SESSION_SECRET");
   if (secret && secret.length >= 32) return secret;
-  // 生产务必配置 SESSION_SECRET；此处仅作兜底，保证 seal/unseal 一致
-  return "notionpan-dev-session-secret-change-me-32b";
+
+  if (isProductionLike()) {
+    throw new Error(
+      "生产环境必须配置 SESSION_SECRET（≥32 字符）。请在环境变量或后台中设置。",
+    );
+  }
+
+  return ensureDevSessionSecret();
 }
 
 /**
@@ -59,6 +107,15 @@ export async function requireSession() {
   const session = await getSession();
   if (!session.isLoggedIn) {
     throw new AuthError("未登录");
+  }
+  const current = getPasswordVersion();
+  // 无 version 的旧 cookie 在改密后失效；未改密时 current 多为 "0"，兼容旧会话
+  if ((session.passwordVersion || "0") !== current) {
+    session.isLoggedIn = false;
+    session.username = "";
+    session.passwordVersion = undefined;
+    await session.save();
+    throw new AuthError("会话已失效，请重新登录");
   }
   return session;
 }

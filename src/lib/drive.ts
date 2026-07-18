@@ -33,7 +33,14 @@ import {
   type ImportJob,
 } from "./import-jobs";
 import type { DriveFile, FileKind, ListFilesResult } from "./types";
-import { blockTypeForKind, detectKind, formatBytes, sanitizeFolder } from "./utils";
+import {
+  blockTypeForKind,
+  detectKind,
+  formatBytes,
+  normalizeNotionId,
+  sanitizeFolder,
+  sameNotionId,
+} from "./utils";
 
 const PART_SIZE = 10 * 1024 * 1024; // 10 MiB
 const SINGLE_PART_LIMIT = 20 * 1024 * 1024; // 20 MiB
@@ -93,7 +100,7 @@ function pageToDriveFile(page: PageLike): DriveFile {
   const expiryTime = first?.file?.expiry_time;
 
   return {
-    id: page.id,
+    id: normalizeNotionId(page.id) || page.id,
     name,
     size: propNumber(page, "Size"),
     mimeType,
@@ -226,16 +233,16 @@ export async function getUploadLimitInfo() {
 /** Webhook 增量：按页面 id 刷新本地索引 */
 export async function syncPageToIndex(pageId: string): Promise<"upserted" | "deleted" | "skipped"> {
   const notion = getNotionClient();
-  const id = pageId.replace(/-/g, "");
+  const pageIdNorm = normalizeNotionId(pageId);
   try {
     const page = (await withNotionRetry(
-      () => notion.pages.retrieve({ page_id: pageId }),
+      () => notion.pages.retrieve({ page_id: pageIdNorm || pageId }),
       "读取页面",
       2,
     )) as unknown as PageLike & { archived?: boolean; in_trash?: boolean; parent?: { type?: string; database_id?: string; data_source_id?: string } };
 
     if (page.in_trash || page.archived) {
-      deleteIndexRow(page.id);
+      deleteIndexRow(page.id || pageIdNorm);
       return "deleted";
     }
 
@@ -272,9 +279,7 @@ export async function syncPageToIndex(pageId: string): Promise<"upserted" | "del
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (/Could not find|not found|404|object_not_found/i.test(msg)) {
-      // 尝试按带/不带连字符 id 删除
-      deleteIndexRow(pageId);
-      if (id !== pageId) deleteIndexRow(id);
+      deleteIndexRow(pageIdNorm || pageId);
       return "deleted";
     }
     throw e;
@@ -283,8 +288,6 @@ export async function syncPageToIndex(pageId: string): Promise<"upserted" | "del
 
 export async function removePageFromIndex(pageId: string) {
   deleteIndexRow(pageId);
-  const bare = pageId.replace(/-/g, "");
-  if (bare !== pageId) deleteIndexRow(bare);
 }
 
 async function queryAllPages(
@@ -486,8 +489,9 @@ export async function createFolder(parent: string, name: string): Promise<{ path
 
 export async function getFile(pageId: string): Promise<DriveFile> {
   const notion = getNotionClient();
+  const id = normalizeNotionId(pageId) || pageId;
   const page = (await withNotionRetry(
-    () => notion.pages.retrieve({ page_id: pageId }),
+    () => notion.pages.retrieve({ page_id: id }),
     "读取文件信息",
   )) as unknown as PageLike;
   return pageToDriveFile(page);
@@ -866,16 +870,61 @@ export async function uploadFile(input: {
     },
   };
 
-  const page = await createPage(notion, properties);
-  onProgress?.({ phase: "page", ratio: 0.96, message: "添加 Notion 预览" });
-  await appendMediaPreview(notion, page.id, kind, fileUploadId, displayName);
-  onProgress?.({ phase: "page", ratio: 0.98, message: "更新列表" });
-  const file = await getFile(page.id);
-  // 保证列表显示原始文件名（getFile 若读到别的 name 也覆盖）
-  const normalized: DriveFile = { ...file, name: displayName || file.name };
-  upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
-  onProgress?.({ phase: "page", ratio: 1, message: "完成" });
-  return { file: normalized, skipped: false };
+  let page: PageLike;
+  try {
+    page = await createPage(notion, properties);
+  } catch (err) {
+    // binary 已上传但建页失败：无法可靠删除 file_upload，错误信息提示用户
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `文件已传到 Notion 但写入网盘失败（可稍后点「刷新索引」）：${msg}`,
+    );
+  }
+
+  let pageId = page.id;
+  try {
+    onProgress?.({ phase: "page", ratio: 0.96, message: "添加 Notion 预览" });
+    await appendMediaPreview(notion, pageId, kind, fileUploadId, displayName);
+    onProgress?.({ phase: "page", ratio: 0.98, message: "更新列表" });
+    const file = await getFile(pageId);
+    // 保证列表显示原始文件名（getFile 若读到别的 name 也覆盖）
+    const normalized: DriveFile = { ...file, name: displayName || file.name };
+    upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
+    onProgress?.({ phase: "page", ratio: 1, message: "完成" });
+    return { file: normalized, skipped: false };
+  } catch (err) {
+    // 页面已建但后续失败：尽量把已有页写入索引，避免孤儿；失败则尝试归档孤儿页
+    try {
+      const partial = await getFile(pageId);
+      const normalized: DriveFile = {
+        ...partial,
+        name: displayName || partial.name,
+      };
+      upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
+      onProgress?.({ phase: "page", ratio: 1, message: "完成（预览可选）" });
+      return { file: normalized, skipped: false };
+    } catch {
+      try {
+        await withNotionRetry(
+          () =>
+            notion.pages.update({
+              page_id: pageId,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ...({ in_trash: true } as any),
+            }),
+          "清理失败上传页",
+          1,
+        );
+      } catch {
+        try {
+          await notion.pages.update({ page_id: pageId, archived: true });
+        } catch {
+          // ignore
+        }
+      }
+      throw err;
+    }
+  }
 }
 
 function filenameFromUrl(url: string): string {
@@ -974,9 +1023,40 @@ async function finalizeUploadedImport(
     },
   };
 
-  const page = await createPage(notion, properties);
-  await appendMediaPreview(notion, page.id, job.kind, job.fileUploadId, job.displayName);
-  const file = await getFile(page.id);
+  let page: PageLike;
+  try {
+    page = await createPage(notion, properties);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`外链已导入 Notion 但写入网盘失败：${msg}`);
+  }
+
+  const pageId = page.id;
+  try {
+    await appendMediaPreview(notion, pageId, job.kind, job.fileUploadId, job.displayName);
+  } catch {
+    // 预览块失败不阻断
+  }
+
+  let file: DriveFile;
+  try {
+    file = await getFile(pageId);
+  } catch (err) {
+    // 页已存在：构造最小记录写索引，避免孤儿页
+    const fallback: DriveFile = {
+      id: normalizeNotionId(pageId),
+      name: job.displayName,
+      size: contentLength || 0,
+      mimeType: job.rawMime || job.uploadMime,
+      kind: job.kind,
+      folder: job.folder,
+      createdTime: new Date().toISOString(),
+      lastEditedTime: new Date().toISOString(),
+    };
+    upsertIndexRow(driveFileToRow(fallback, isFolderMarker(fallback)));
+    return fallback;
+  }
+
   const finalSize =
     (typeof contentLength === "number" && contentLength > 0
       ? contentLength
@@ -987,7 +1067,7 @@ async function finalizeUploadedImport(
       await withNotionRetry(
         () =>
           notion.pages.update({
-            page_id: page.id,
+            page_id: pageId,
             properties: { Size: { number: finalSize } },
           }),
         "更新文件大小",
@@ -1268,11 +1348,12 @@ async function waitImportJob(jobId: string, timeoutMs: number) {
 
 export async function deleteFile(pageId: string): Promise<void> {
   const notion = getNotionClient();
+  const id = normalizeNotionId(pageId) || pageId;
   try {
     await withNotionRetry(
       () =>
         notion.pages.update({
-          page_id: pageId,
+          page_id: id,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ...({ in_trash: true } as any),
         }),
@@ -1282,16 +1363,16 @@ export async function deleteFile(pageId: string): Promise<void> {
     await withNotionRetry(
       () =>
         notion.pages.update({
-          page_id: pageId,
+          page_id: id,
           archived: true,
         }),
       "归档文件",
     );
   }
-  deleteIndexRow(pageId);
+  deleteIndexRow(id);
   try {
     const { deleteThumb } = await import("./thumb");
-    deleteThumb(pageId);
+    deleteThumb(id);
   } catch {
     // ignore
   }
@@ -1300,14 +1381,15 @@ export async function deleteFile(pageId: string): Promise<void> {
 export async function renameFile(pageId: string, name: string): Promise<DriveFile> {
   const nextName = name.trim();
   if (!nextName) throw new Error("文件名不能为空");
+  const id = normalizeNotionId(pageId) || pageId;
 
   // 先取当前文件，确定所在目录
-  const current = await getFile(pageId);
+  const current = await getFile(id);
   if (current.name === nextName) return current;
 
   // 同目录已有同名（不含自己）→ 拒绝
   const clash = findIndexFileByName(current.folder, nextName);
-  if (clash && clash.id !== pageId) {
+  if (clash && !sameNotionId(clash.id, id)) {
     throw new Error(`当前目录已存在「${nextName}」`);
   }
 
@@ -1315,14 +1397,14 @@ export async function renameFile(pageId: string, name: string): Promise<DriveFil
   await withNotionRetry(
     () =>
       notion.pages.update({
-        page_id: pageId,
+        page_id: id,
         properties: {
           Name: { title: richText(nextName) },
         },
       }),
     "重命名",
   );
-  const file = await getFile(pageId);
+  const file = await getFile(id);
   // 保证显示名与请求一致
   const normalized: DriveFile = { ...file, name: nextName };
   upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
@@ -1331,12 +1413,13 @@ export async function renameFile(pageId: string, name: string): Promise<DriveFil
 
 export async function moveFile(pageId: string, folder: string): Promise<DriveFile> {
   const target = sanitizeFolder(folder);
-  const current = await getFile(pageId);
+  const id = normalizeNotionId(pageId) || pageId;
+  const current = await getFile(id);
   if (current.folder === target) return current;
 
   // 目标目录已有同名 → 拒绝
   const clash = findIndexFileByName(target, current.name);
-  if (clash && clash.id !== pageId) {
+  if (clash && !sameNotionId(clash.id, id)) {
     throw new Error(`目标目录已存在「${current.name}」`);
   }
 
@@ -1344,14 +1427,14 @@ export async function moveFile(pageId: string, folder: string): Promise<DriveFil
   await withNotionRetry(
     () =>
       notion.pages.update({
-        page_id: pageId,
+        page_id: id,
         properties: {
           Folder: { rich_text: richText(target) },
         },
       }),
     "移动文件",
   );
-  const file = await getFile(pageId);
+  const file = await getFile(id);
   upsertIndexRow(driveFileToRow(file, isFolderMarker(file)));
   return file;
 }

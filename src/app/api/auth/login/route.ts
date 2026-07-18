@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { publicAppConfig, readAppConfig } from "@/lib/app-config";
+import { getPasswordVersion, publicAppConfig, readAppConfig } from "@/lib/app-config";
 import { getSession } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -9,8 +9,18 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const cfg = readAppConfig();
+    if (cfg.username === "__corrupt__" || cfg.passwordHash === "__corrupt__") {
+      return NextResponse.json(
+        {
+          error:
+            "配置文件损坏，无法登录。请修复 data/app-config.json 或从备份恢复。",
+          code: "CONFIG_CORRUPT",
+        },
+        { status: 503 },
+      );
+    }
     if (!cfg.setupCompleted) {
-      return NextResponse.json({ error: "请先完成初始设置", code: "SETUP_REQUIRED" }, { status: 403 });
+      return NextResponse.json({ error: "请先完成初始账号设置" }, { status: 400 });
     }
 
     const body = await req.json();
@@ -30,6 +40,7 @@ export async function POST(req: NextRequest) {
     const session = await getSession();
     session.isLoggedIn = true;
     session.username = cfg.username;
+    session.passwordVersion = getPasswordVersion(cfg);
     await session.save();
 
     return NextResponse.json({

@@ -15,15 +15,26 @@ export type UploadProgressInfo = {
   phase?: string;
 };
 
+export type UploadViaServerHandle = {
+  promise: Promise<UploadViaServerResult>;
+  abort: () => void;
+};
+
 const CLIENT_SHARE = 40;
+/** 单文件：客户端上传 + Notion 同步；大文件/慢网可放宽 */
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function uploadViaServer(
   file: File,
   folder: string,
   onProgress?: (pct: number, info?: UploadProgressInfo) => void,
-): Promise<UploadViaServerResult> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
+  options?: { timeoutMs?: number; signal?: AbortSignal },
+): UploadViaServerHandle {
+  let xhr: XMLHttpRequest | null = null;
+  let abortExternal = false;
+
+  const promise = new Promise<UploadViaServerResult>((resolve, reject) => {
+    xhr = new XMLHttpRequest();
     const form = new FormData();
     form.append("file", file);
     form.append("folder", folder);
@@ -40,6 +51,18 @@ export function uploadViaServer(
       const next = Math.max(lastPct, Math.min(100, Math.round(pct)));
       lastPct = next;
       onProgress?.(next, info ? { ...info, pct: next } : { pct: next });
+    };
+
+    const settleReject = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    const settleResolve = (result: UploadViaServerResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
     };
 
     const handleLine = (line: string) => {
@@ -78,6 +101,7 @@ export function uploadViaServer(
     };
 
     const consumeResponseText = () => {
+      if (!xhr) return;
       const text = xhr.responseText || "";
       if (text.length <= parseOffset) return;
       const chunk = text.slice(parseOffset);
@@ -87,6 +111,23 @@ export function uploadViaServer(
       lineBuf = parts.pop() || "";
       for (const line of parts) handleLine(line);
     };
+
+    const onAbortSignal = () => {
+      abortExternal = true;
+      try {
+        xhr?.abort();
+      } catch {
+        // ignore
+      }
+    };
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        settleReject(new Error("上传已取消"));
+        return;
+      }
+      options.signal.addEventListener("abort", onAbortSignal, { once: true });
+    }
 
     xhr.upload.onprogress = (ev) => {
       if (!ev.lengthComputable) return;
@@ -116,11 +157,11 @@ export function uploadViaServer(
 
     xhr.onreadystatechange = () => {
       // readyState 3 LOADING / 4 DONE 时解析 NDJSON
-      if (xhr.readyState >= 3) consumeResponseText();
+      if (xhr && xhr.readyState >= 3) consumeResponseText();
     };
 
     xhr.onload = () => {
-      if (settled) return;
+      if (settled || !xhr) return;
       consumeResponseText();
       if (lineBuf.trim()) handleLine(lineBuf);
 
@@ -142,36 +183,53 @@ export function uploadViaServer(
         }
       }
 
-      settled = true;
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(streamError || `上传失败: ${file.name}`));
+        settleReject(new Error(streamError || `上传失败: ${file.name}`));
         return;
       }
       if (streamError) {
-        reject(new Error(streamError));
+        settleReject(new Error(streamError));
         return;
       }
       if (finalResult) {
-        resolve(finalResult);
+        settleResolve(finalResult);
         return;
       }
-      reject(new Error(`上传失败: ${file.name}`));
+      settleReject(new Error(`上传失败: ${file.name}`));
     };
 
     xhr.onerror = () => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(`网络错误: ${file.name}`));
+      settleReject(new Error(`网络错误: ${file.name}`));
     };
 
     xhr.ontimeout = () => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(`上传超时: ${file.name}`));
+      settleReject(new Error(`上传超时: ${file.name}`));
+    };
+
+    xhr.onabort = () => {
+      settleReject(
+        new Error(abortExternal || options?.signal?.aborted ? "上传已取消" : `上传已取消: ${file.name}`),
+      );
     };
 
     xhr.open("POST", "/api/files");
     xhr.responseType = "text";
+    xhr.timeout =
+      typeof options?.timeoutMs === "number" && options.timeoutMs > 0
+        ? options.timeoutMs
+        : DEFAULT_TIMEOUT_MS;
     xhr.send(form);
   });
+
+  return {
+    promise,
+    abort: () => {
+      abortExternal = true;
+      try {
+        xhr?.abort();
+      } catch {
+        // ignore
+      }
+    },
+  };
 }

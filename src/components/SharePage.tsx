@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isMarkdownFile, renderMarkdown } from "@/lib/markdown";
 import { formatBytes } from "@/lib/utils";
 import { IconDownload } from "./icons";
 import { MediaPlayer } from "./MediaPlayer";
@@ -181,9 +182,16 @@ export function SharePage({ token }: { token: string }) {
         ) : info.kind === "pdf" ? (
           <iframe src={src} title={info.fileName} className="h-[70vh] w-full rounded-2xl bg-white" />
         ) : isText(info.fileName, info.mimeType) ? (
-          <pre className="max-h-[70vh] overflow-auto rounded-xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-800">
-            <code>{text ?? "加载中…"}</code>
-          </pre>
+          isMarkdownFile(info.fileName, info.mimeType) && text ? (
+            <div
+              className="np-md-body max-h-[70vh] overflow-auto rounded-xl bg-white p-4 sm:p-5"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+            />
+          ) : (
+            <pre className="max-h-[70vh] overflow-auto rounded-xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-800">
+              <code>{text ?? "加载中…"}</code>
+            </pre>
+          )
         ) : (
           <div className="flex h-64 flex-col items-center justify-center text-slate-500">
             <p>此类型请下载后查看</p>

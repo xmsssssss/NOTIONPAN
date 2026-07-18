@@ -28,16 +28,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
+  // 握手：仅允许「尚未配置」时写入一次；已配置则拒绝覆盖，防止匿名劫持
   const verificationToken =
     typeof payload.verification_token === "string"
-      ? payload.verification_token
+      ? payload.verification_token.trim()
       : "";
   if (verificationToken) {
+    const existing = (getRuntimeEnv("NOTION_WEBHOOK_TOKEN") || "").trim();
+    if (existing) {
+      if (existing === verificationToken) {
+        return NextResponse.json({ ok: true, verified: true, reused: true });
+      }
+      return NextResponse.json(
+        {
+          error: "webhook token already configured",
+          hint: "在后台环境变量中清空 NOTION_WEBHOOK_TOKEN 后，再重新验证 Notion Webhook",
+        },
+        { status: 409 },
+      );
+    }
     try {
       writeEnvConfig({ NOTION_WEBHOOK_TOKEN: verificationToken });
       softReloadEnv();
-    } catch {
-      // ignore
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error: err instanceof Error ? err.message : "failed to save webhook token",
+        },
+        { status: 500 },
+      );
     }
     return NextResponse.json({ ok: true, verified: true });
   }

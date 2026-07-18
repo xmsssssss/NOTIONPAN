@@ -19,7 +19,9 @@ const MAX_EDGE = 360;
 const QUALITY = 72;
 
 export function thumbPath(id: string) {
-  const safe = id.replace(/[^a-zA-Z0-9_-]/g, "");
+  // 统一用去连字符 id，避免 hyphen 形态导致缩略图重复/删不掉
+  const bare = String(id || "").replace(/-/g, "").toLowerCase();
+  const safe = bare.replace(/[^a-zA-Z0-9_]/g, "") || "unknown";
   return path.join(thumbDir(), `${safe}.webp`);
 }
 
