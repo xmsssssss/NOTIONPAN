@@ -239,20 +239,18 @@ export async function syncPageToIndex(pageId: string): Promise<"upserted" | "del
       return "deleted";
     }
 
-    // 仅处理属于本网盘数据库的页面
+    // 仅处理属于本网盘数据库的页面（必须比对 ID，不能只看 parent.type）
     const dbId = getDatabaseId().replace(/-/g, "").toLowerCase();
     const parent = page.parent;
     const parentDb = String(parent?.database_id || "").replace(/-/g, "").toLowerCase();
     const dsId = (await getDataSourceId(notion))?.replace(/-/g, "").toLowerCase() || "";
     const parentDs = String(parent?.data_source_id || "").replace(/-/g, "").toLowerCase();
     const inDb =
-      (parentDb && parentDb === dbId) ||
-      (parentDs && dsId && parentDs === dsId) ||
-      parent?.type === "database_id" ||
-      parent?.type === "data_source_id";
+      (Boolean(parentDb) && parentDb === dbId) ||
+      (Boolean(parentDs) && Boolean(dsId) && parentDs === dsId);
 
-    // parent 字段缺失时仍尝试读属性（兼容）
-    if (parent && !inDb && parentDb && parentDb !== dbId && !(parentDs && dsId && parentDs === dsId)) {
+    // 有明确 parent 且不在本库 → 跳过，避免 Webhook 把其它库页面写进索引
+    if (parent && (parentDb || parentDs) && !inDb) {
       return "skipped";
     }
 
@@ -892,11 +890,24 @@ function filenameFromUrl(url: string): string {
   return `import-${Date.now()}.bin`;
 }
 
+/** 进程内锁：同一 job 只 finalize 一次（防 Webhook + 轮询双建页） */
+const importFinalizeLocks = new Map<string, Promise<ImportJob | null>>();
+
 /** 将已 uploaded 的 file_upload 落成网盘页面 + 索引 */
 async function finalizeUploadedImport(
   job: ImportJob,
   contentLengthHint = 0,
 ): Promise<DriveFile> {
+  // 已完成则复用，避免并发路径再 createPage
+  const latest = getImportJob(job.id);
+  if (latest?.status === "done" && latest.file) {
+    return latest.file;
+  }
+  const existingByName = findIndexFileByName(job.folder, job.displayName);
+  if (existingByName) {
+    return existingByName;
+  }
+
   const notion = getNotionClient();
   let contentLength = contentLengthHint || job.contentLength || 0;
 
@@ -933,6 +944,12 @@ async function finalizeUploadedImport(
       // ignore
     }
   }
+
+  // createPage 前再查一次（锁内另一路径可能刚写完）
+  const again = getImportJob(job.id);
+  if (again?.status === "done" && again.file) return again.file;
+  const named = findIndexFileByName(job.folder, job.displayName);
+  if (named) return named;
 
   const filePropName =
     job.displayName.length <= 100 ? job.displayName : job.uploadName;
@@ -1070,20 +1087,15 @@ export async function startImportFromUrl(input: {
   });
 
   if (initialStatus === "uploaded") {
-    try {
-      const file = await finalizeUploadedImport(job, contentLength);
-      updateImportJob(job.id, {
-        status: "done",
-        file,
-        contentLength: file.size,
-        error: undefined,
-      });
-      return { mode: "async", jobId: job.id, status: "done" };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "导入失败";
-      updateImportJob(job.id, { status: "error", error: msg });
-      throw e;
+    const finished = await advanceImportJob(job.id, { contentLength });
+    if (finished?.status === "error") {
+      throw new Error(finished.error || "导入失败");
     }
+    return {
+      mode: "async",
+      jobId: job.id,
+      status: finished?.status === "done" ? "done" : "pending",
+    };
   }
 
   // 后台轮询兜底（无 Webhook 或 Webhook 延迟时仍能完成）
@@ -1122,39 +1134,53 @@ export async function getImportJobStatus(jobId: string) {
   return publicImportJob(job);
 }
 
-/** Webhook / 轮询：推进任务到终态 */
+/** Webhook / 轮询：推进任务到终态（同 job 串行，避免建出两个同名页） */
 export async function advanceImportJob(
   jobId: string,
   opts?: { forceFail?: string; contentLength?: number },
 ): Promise<ImportJob | null> {
-  const job = getImportJob(jobId);
-  if (!job) return null;
-  if (job.status === "done" || job.status === "skipped" || job.status === "error") {
-    return job;
-  }
+  const inflight = importFinalizeLocks.get(jobId);
+  if (inflight) return inflight;
 
-  if (opts?.forceFail) {
-    return updateImportJob(job.id, {
-      status: "error",
-      error: opts.forceFail,
-    });
-  }
-
-  try {
-    const file = await finalizeUploadedImport(job, opts?.contentLength || 0);
-    return updateImportJob(job.id, {
-      status: "done",
-      file,
-      contentLength: file.size,
-      error: undefined,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "导入失败";
-    if (/尚未完成/.test(msg)) {
-      return updateImportJob(job.id, { status: "pending", error: undefined });
+  const run = (async (): Promise<ImportJob | null> => {
+    const job = getImportJob(jobId);
+    if (!job) return null;
+    if (job.status === "done" || job.status === "skipped" || job.status === "error") {
+      return job;
     }
-    return updateImportJob(job.id, { status: "error", error: msg });
-  }
+
+    if (opts?.forceFail) {
+      return updateImportJob(job.id, {
+        status: "error",
+        error: opts.forceFail,
+      });
+    }
+
+    // 占位：其它路径看到 finalizing 时等锁即可，勿再 createPage
+    updateImportJob(job.id, { status: "finalizing", error: undefined });
+
+    try {
+      const file = await finalizeUploadedImport(job, opts?.contentLength || 0);
+      // 若复用了已有同名文件，仍标 done（不再建页）
+      return updateImportJob(job.id, {
+        status: "done",
+        file,
+        contentLength: file.size,
+        error: undefined,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "导入失败";
+      if (/尚未完成/.test(msg)) {
+        return updateImportJob(job.id, { status: "pending", error: undefined });
+      }
+      return updateImportJob(job.id, { status: "error", error: msg });
+    }
+  })().finally(() => {
+    importFinalizeLocks.delete(jobId);
+  });
+
+  importFinalizeLocks.set(jobId, run);
+  return run;
 }
 
 export async function advanceImportJobByUploadId(
@@ -1168,8 +1194,13 @@ export async function advanceImportJobByUploadId(
 
 async function refreshImportJobFromNotion(jobId: string) {
   const job = getImportJob(jobId);
-  if (!job || job.status === "done" || job.status === "error" || job.status === "skipped") {
+  if (!job || isImportTerminal(job.status)) {
     return job;
+  }
+  // finalizing：有进程内锁则等；无锁（重启残留）则允许继续推进
+  if (job.status === "finalizing") {
+    const wait = importFinalizeLocks.get(jobId);
+    if (wait) return wait;
   }
   const notion = getNotionClient();
   const info = await withNotionRetry(
@@ -1201,18 +1232,20 @@ async function refreshImportJobFromNotion(jobId: string) {
   return job;
 }
 
+function isImportTerminal(status: string | undefined) {
+  return status === "done" || status === "error" || status === "skipped";
+}
+
 async function pollImportJobUntilDone(jobId: string) {
   // 最多约 30 分钟
   for (let i = 0; i < 180; i++) {
     await new Promise((r) => setTimeout(r, 2000 + Math.min(i, 30) * 200));
     const job = await refreshImportJobFromNotion(jobId);
     if (!job) return;
-    if (job.status === "done" || job.status === "error" || job.status === "skipped") {
-      return;
-    }
+    if (isImportTerminal(job.status)) return;
   }
   const cur = getImportJob(jobId);
-  if (cur && cur.status === "pending") {
+  if (cur && (cur.status === "pending" || cur.status === "uploaded")) {
     updateImportJob(jobId, {
       status: "error",
       error: "Notion 导入超时，请确认链接可公网访问后重试",
@@ -1225,7 +1258,7 @@ async function waitImportJob(jobId: string, timeoutMs: number) {
   while (Date.now() - start < timeoutMs) {
     const job = await refreshImportJobFromNotion(jobId);
     if (!job) throw new Error("导入任务不存在");
-    if (job.status === "done" || job.status === "error" || job.status === "skipped") {
+    if (isImportTerminal(job.status)) {
       return publicImportJob(job);
     }
     await new Promise((r) => setTimeout(r, 1500));

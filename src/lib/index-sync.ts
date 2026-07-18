@@ -77,7 +77,8 @@ export async function queryAllNotionPages(
 ): Promise<PageLike[]> {
   const all: PageLike[] = [];
   let cursor: string | null = null;
-  for (let i = 0; i < 50; i++) {
+  // 上限约 2 万条（200 页 × 100）；再大需分页策略改造
+  for (let i = 0; i < 200; i++) {
     const res = await queryPages(notion, null, cursor, 100);
     all.push(...(res.results as PageLike[]));
     if (!res.has_more || !res.next_cursor) break;

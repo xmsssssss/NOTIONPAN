@@ -506,7 +506,8 @@ export function DriveApp({
             throw new Error(st.error || "导入失败");
           }
           patchUploadTask(taskId, {
-            phaseLabel: "Notion 拉取中…",
+            phaseLabel:
+              st.status === "finalizing" ? "写入网盘…" : "Notion 拉取中…",
             progress: Math.min(92, Math.max(fake, 25)),
           });
         }

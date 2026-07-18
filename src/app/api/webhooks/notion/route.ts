@@ -43,18 +43,23 @@ export async function POST(req: NextRequest) {
   }
 
   const token = getRuntimeEnv("NOTION_WEBHOOK_TOKEN") || "";
-  if (token) {
-    const signature =
-      req.headers.get("x-notion-signature") ||
-      req.headers.get("X-Notion-Signature");
-    const ok = await verifyWebhookSignature({
-      body: rawBody,
-      signature,
-      verificationToken: token,
-    });
-    if (!ok) {
-      return NextResponse.json({ error: "invalid signature" }, { status: 401 });
-    }
+  // 已配置 token 时必须验签；未配置时拒绝业务事件（仅允许 verification_token 握手）
+  if (!token) {
+    return NextResponse.json(
+      { error: "webhook not configured", hint: "complete Notion webhook verification first" },
+      { status: 503 },
+    );
+  }
+  const signature =
+    req.headers.get("x-notion-signature") ||
+    req.headers.get("X-Notion-Signature");
+  const ok = await verifyWebhookSignature({
+    body: rawBody,
+    signature,
+    verificationToken: token,
+  });
+  if (!ok) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
   const type = String(payload.type || "");

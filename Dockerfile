@@ -59,6 +59,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # public（builder 已保证目录存在）
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# sharp 为 serverExternalPackages，standalone 不一定 trace 进来，显式拷贝
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/sharp ./node_modules/sharp
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@img ./node_modules/@img
 
 USER nextjs
 

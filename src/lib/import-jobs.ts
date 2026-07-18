@@ -6,6 +6,7 @@ import type { DriveFile, FileKind } from "./types";
 export type ImportJobStatus =
   | "pending"
   | "uploaded"
+  | "finalizing"
   | "done"
   | "error"
   | "skipped";
