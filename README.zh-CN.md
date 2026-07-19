@@ -2,7 +2,7 @@
 
 基于 **Notion** 的自托管网盘。
 
-[English](https://app.notion.com/p/xmstudent/README.md) · [中文](https://app.notion.com/p/xmstudent/README.zh-CN.md)
+[English](./README.md) · [中文](./README.zh-CN.md)
 
 ```mermaid
 flowchart LR
