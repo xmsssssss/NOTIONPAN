@@ -1746,7 +1746,9 @@ export function DriveApp({
       {/* 右下角悬浮菜单（向上展开） */}
       <div ref={fabRef} className="fab-offset fixed z-[45] flex flex-col items-end gap-2">
         {fabOpen && (
-          <div className="mb-1 flex max-h-[min(70dvh,28rem)] flex-col-reverse items-end gap-2 overflow-y-auto overscroll-contain">
+          <div
+            className="fab-menu-list mb-1 flex max-h-[min(70dvh,28rem)] flex-col items-end gap-2 overflow-y-auto overscroll-contain py-1 pr-0.5"
+          >
             {[
               {
                 id: "new-folder",
@@ -1795,7 +1797,11 @@ export function DriveApp({
                     },
                   ]
                 : []),
-            ].map((item, idx) => (
+            ]
+              // 自上而下展示；主按钮靠近 FAB
+              .slice()
+              .reverse()
+              .map((item, idx) => (
               <button
                 key={item.id}
                 type="button"
@@ -1804,7 +1810,7 @@ export function DriveApp({
                   item.onClick();
                   setFabOpen(false);
                 }}
-                 className={`flex items-center gap-2 rounded-full px-3.5 py-2.5 text-sm font-medium shadow-lg transition active:scale-95 hover:scale-[1.02] disabled:opacity-50 sm:py-2 ${
+                 className={`flex items-center gap-2 rounded-full px-3.5 py-2.5 text-sm font-medium shadow-lg transition active:scale-95 hover:brightness-[0.98] disabled:opacity-50 sm:py-2 ${
                    item.primary
                      ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow-sky-500/30"
                      : item.danger
@@ -1816,7 +1822,7 @@ export function DriveApp({
                  }}
                >
                  <span
-                   className={`flex h-8 w-8 items-center justify-center rounded-full ${
+                   className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
                      item.primary
                        ? "bg-white/20"
                        : item.danger

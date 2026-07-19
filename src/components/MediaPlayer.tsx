@@ -81,7 +81,8 @@ export function MediaPlayer({
   const [volume, setVolume] = useState(0.85);
   const [muted, setMuted] = useState(false);
   const [rate, setRate] = useState(1);
-  const [hover, setHover] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const hideControlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [buffering, setBuffering] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeSub, setActiveSub] = useState<string>("off");
@@ -269,12 +270,46 @@ export function MediaPlayer({
     setCurrent(el.currentTime);
   };
 
+  const clearHideControlsTimer = useCallback(() => {
+    if (hideControlsTimer.current) {
+      clearTimeout(hideControlsTimer.current);
+      hideControlsTimer.current = null;
+    }
+  }, []);
+
+  /** 播放中：短暂显示控件后自动隐藏（全屏/桌面鼠标停在画面上也能藏条） */
+  const bumpControls = useCallback(() => {
+    setControlsVisible(true);
+    clearHideControlsTimer();
+    const el = mediaRef.current;
+    if (!el || el.paused) return;
+    hideControlsTimer.current = setTimeout(() => {
+      setControlsVisible(false);
+      hideControlsTimer.current = null;
+    }, 2800);
+  }, [clearHideControlsTimer]);
+
+  useEffect(() => {
+    return () => clearHideControlsTimer();
+  }, [clearHideControlsTimer]);
+
+  // 暂停时始终显示控件；开始播放后启动自动隐藏
+  useEffect(() => {
+    if (!playing) {
+      clearHideControlsTimer();
+      setControlsVisible(true);
+      return;
+    }
+    bumpControls();
+  }, [playing, bumpControls, clearHideControlsTimer]);
+
   const toggleFullscreen = async () => {
     const shell = shellRef.current;
     if (!shell) return;
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await shell.requestFullscreen();
+      bumpControls();
     } catch {
       // ignore
     }
@@ -310,17 +345,31 @@ export function MediaPlayer({
 
   const progress = duration > 0 ? (current / duration) * 100 : 0;
 
+  const showVideoChrome = controlsVisible || !playing;
+
   return (
     <div
       ref={shellRef}
       className={
         kind === "video"
-          ? "relative flex h-full min-h-0 w-full max-w-none flex-1 items-center justify-center overflow-hidden sm:max-w-3xl"
+          ? `relative flex h-full min-h-0 w-full max-w-none flex-1 items-center justify-center overflow-hidden sm:max-w-3xl ${
+              kind === "video" && playing && !controlsVisible ? "cursor-none" : ""
+            }`
           : "relative mx-auto w-full max-w-md overflow-hidden"
       }
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onTouchStart={() => setHover(true)}
+      onMouseMove={kind === "video" ? bumpControls : undefined}
+      onMouseEnter={kind === "video" ? bumpControls : undefined}
+      onMouseLeave={
+        kind === "video"
+          ? () => {
+              if (playing) {
+                clearHideControlsTimer();
+                setControlsVisible(false);
+              }
+            }
+          : undefined
+      }
+      onTouchStart={kind === "video" ? bumpControls : undefined}
     >
       {kind === "video" ? (
         <div className="relative h-full min-h-0 w-full overflow-hidden bg-black sm:aspect-video sm:h-auto sm:max-h-full sm:rounded-lg sm:shadow-lg sm:ring-1 sm:ring-slate-200">
@@ -329,7 +378,10 @@ export function MediaPlayer({
             src={src}
             className="absolute inset-0 h-full w-full bg-black object-contain"
             playsInline
-            onClick={() => void togglePlay()}
+            onClick={() => {
+              void togglePlay();
+              bumpControls();
+            }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onWaiting={() => setBuffering(true)}
@@ -361,7 +413,7 @@ export function MediaPlayer({
           {subtitleText && (
             <div
               className={`np-sub-layer pointer-events-none absolute inset-x-0 z-10 flex justify-center px-3 transition-[bottom] duration-200 sm:px-6 ${
-                hover || !playing
+                showVideoChrome
                   ? "bottom-[5.5rem] sm:bottom-[4.25rem]"
                   : "bottom-8 sm:bottom-6"
               }`}
@@ -372,9 +424,15 @@ export function MediaPlayer({
             </div>
           )}
           <div
-            className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-14 transition sm:px-4 sm:pb-3 sm:pt-10 ${
-              hover || !playing ? "opacity-100" : "opacity-100 sm:opacity-0"
+            className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-14 transition-opacity duration-300 sm:px-4 sm:pb-3 sm:pt-10 ${
+              showVideoChrome
+                ? "pointer-events-auto opacity-100"
+                : "pointer-events-none opacity-0"
             }`}
+            onMouseMove={(e) => {
+              e.stopPropagation();
+              bumpControls();
+            }}
           >
             <Controls
               kind={kind}

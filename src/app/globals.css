@@ -74,6 +74,16 @@ textarea {
   bottom: max(1.25rem, calc(1rem + env(safe-area-inset-bottom, 0px)));
   right: max(1.25rem, calc(1rem + env(safe-area-inset-right, 0px)));
 }
+/* FAB 展开列表：隐藏滚动条，避免 hover 时出现横/竖条伪影 */
+.fab-menu-list {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.fab-menu-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 .audio-mini-offset {
   /* 避开右下 FAB（约 3rem）与安全区 */
   bottom: max(1.25rem, calc(1rem + env(safe-area-inset-bottom, 0px)));
