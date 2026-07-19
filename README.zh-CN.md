@@ -75,7 +75,7 @@ flowchart LR
 </details>
 
 ```bash
-git clone <https://github.com/xmsssssss/NOTIONPAN.git>
+git clone https://github.com/xmsssssss/NOTIONPAN.git
 cd NOTIONPAN
 cp .env.example .env
 # 上线前请修改 SESSION_SECRET
@@ -98,7 +98,7 @@ docker compose up -d --build
 </details>
 
 ```bash
-git clone <https://github.com/xmsssssss/NOTIONPAN.git>
+git clone https://github.com/xmsssssss/NOTIONPAN.git
 cd NOTIONPAN
 npm install
 cp .env.example .env.local
@@ -147,7 +147,7 @@ SESSION_SECRET='你的长随机密钥' COOKIE_SECURE=0 npm start
 ### 3. Database ID
 
 ```
-<https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?v=>...
+https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?v=...
                       └────────── Database ID ─────────┘
 ```
 
@@ -188,7 +188,7 @@ SESSION_SECRET='你的长随机密钥' COOKIE_SECURE=0 npm start
 需要公网 **HTTPS** 地址：
 
 ```
-<https://你的域名/api/webhooks/notion>
+https://你的域名/api/webhooks/notion
 ```
 
 **建议订阅**
@@ -269,4 +269,4 @@ docker-compose.yml
 
 ## License
 
-本项目基于 [MIT 开源协议](https://github.com/xmsssssss/NOTIONPAN/blob/master/LICENSE) 开源。
+本项目基于 [MIT 开源协议](https://github.com/xmsssssss/NOTIONPAN/blob/master/LICENCE) 开源。
