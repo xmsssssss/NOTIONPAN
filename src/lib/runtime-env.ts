@@ -9,6 +9,8 @@ const ENV_KEYS = [
   "COOKIE_SECURE",
   /** Notion Webhook 订阅校验令牌（verification_token） */
   "NOTION_WEBHOOK_TOKEN",
+  /** 对外访问根地址，如 https://pan.example.com（分享链接用，避免 0.0.0.0） */
+  "PUBLIC_URL",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];

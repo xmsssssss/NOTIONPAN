@@ -180,7 +180,18 @@ export function SharePage({ token }: { token: string }) {
             <MediaPlayer src={src} kind="audio" title={info.fileName} size={info.size} />
           </div>
         ) : info.kind === "pdf" ? (
-          <iframe src={src} title={info.fileName} className="h-[70vh] w-full rounded-2xl bg-white" />
+          <object
+            data={src}
+            type="application/pdf"
+            title={info.fileName}
+            className="h-[70vh] w-full rounded-2xl bg-white"
+          >
+            <iframe
+              src={src}
+              title={info.fileName}
+              className="h-[70vh] w-full rounded-2xl bg-white"
+            />
+          </object>
         ) : isText(info.fileName, info.mimeType) ? (
           isMarkdownFile(info.fileName, info.mimeType) && text ? (
             <div

@@ -6,26 +6,20 @@ export function fileDownloadHref(fileId: string): string {
 }
 
 /**
- * 打开/下载：不使用 location.href，避免整页跳走打断上传/音频。
- * 优先新标签；弹窗被拦时用隐藏 a[download] 点击。
+ * 打开/下载：只用一次隐藏 a 点击，避免 window.open(noopener) 在部分浏览器
+ * 返回 null 后又走 fallback 导致双请求。
  */
 export function openFileDownload(file: DriveFile | string): void {
   const id = typeof file === "string" ? file : file.id;
   const href = fileDownloadHref(id);
-  const name = typeof file === "string" ? undefined : file.name;
-
-  const win = window.open(href, "_blank", "noopener,noreferrer");
-  if (win) return;
 
   const a = document.createElement("a");
   a.href = href;
   a.rel = "noopener noreferrer";
-  a.target = "_blank";
-  if (name) a.setAttribute("download", name);
+  // 不设 download：走 302 Notion 时由浏览器按响应处理；设 download 也拦不住跨域
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
-  // 延迟移除，兼容部分浏览器
   setTimeout(() => {
     try {
       document.body.removeChild(a);

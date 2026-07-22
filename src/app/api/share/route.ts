@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
 import { getFile } from "@/lib/drive";
+import { publicOrigin } from "@/lib/public-origin";
 import { createShare, listShares, publicShareView } from "@/lib/share";
 import { getSession } from "@/lib/session";
 
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
       createdBy: session.username || "admin",
     });
 
-    const origin = req.nextUrl.origin;
+    const origin = publicOrigin(req);
     return NextResponse.json({
       ok: true,
       share: publicShareView(share),

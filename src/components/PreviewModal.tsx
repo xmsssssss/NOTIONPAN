@@ -76,7 +76,11 @@ export function PreviewModal({
   };
 
   const file = current;
-  const src = fileDownloadHref(file.id);
+  /** 媒体默认直连下载入口；PDF 走同源反代，兼容 Edge 等无法 iframe 外链的浏览器 */
+  const src =
+    file.kind === "pdf"
+      ? `${fileDownloadHref(file.id)}?proxy=1`
+      : fileDownloadHref(file.id);
 
   const siblingKey = siblings.map((f) => f.id).join(",");
 
@@ -199,7 +203,17 @@ export function PreviewModal({
     setTextError(null);
     setMdMode("preview");
 
-    if (!isTextFile(file)) return;
+    // PDF object/iframe 部分浏览器不触发 onLoad，超时后去掉遮罩
+    let pdfTimer: ReturnType<typeof setTimeout> | null = null;
+    if (file.kind === "pdf") {
+      pdfTimer = setTimeout(() => setPdfLoaded(true), 2500);
+    }
+
+    if (!isTextFile(file)) {
+      return () => {
+        if (pdfTimer) clearTimeout(pdfTimer);
+      };
+    }
     setLoadingText(true);
 
     let cancelled = false;
@@ -237,6 +251,7 @@ export function PreviewModal({
     return () => {
       cancelled = true;
       ac?.abort();
+      if (pdfTimer) clearTimeout(pdfTimer);
     };
   }, [file.id, file.kind, file.mimeType, file.name]);
 
@@ -574,18 +589,39 @@ export function PreviewModal({
             )}
 
             {file.kind === "pdf" && (
-              <div className="relative h-full w-full min-h-0">
+              <div className="relative h-full w-full min-h-0 bg-slate-100">
                 {!pdfLoaded && (
                   <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-50/80">
                     <LoadingBlock label="PDF 加载中…" />
                   </div>
                 )}
-                <iframe
-                  src={src}
+                {/* object 优先（Edge 对同源 PDF 更稳），iframe 兜底 */}
+                <object
+                  data={src}
+                  type="application/pdf"
                   title={file.name}
-                  onLoad={() => setPdfLoaded(true)}
                   className="h-full w-full bg-white"
-                />
+                  onLoad={() => setPdfLoaded(true)}
+                >
+                  <iframe
+                    src={src}
+                    title={file.name}
+                    onLoad={() => setPdfLoaded(true)}
+                    className="h-full w-full bg-white"
+                  />
+                </object>
+                {pdfLoaded && (
+                  <div className="pointer-events-none absolute bottom-2 right-2 z-10 sm:bottom-3 sm:right-3">
+                    <a
+                      href={src}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="pointer-events-auto rounded-lg bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm hover:bg-black/70"
+                    >
+                      新标签打开
+                    </a>
+                  </div>
+                )}
               </div>
             )}
 
