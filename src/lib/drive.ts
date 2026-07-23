@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import mime from "mime-types";
 import type { Client } from "@notionhq/client";
 import {
@@ -687,8 +689,56 @@ async function uploadBinary(
   bytes: Uint8Array,
   onProgress?: UploadProgressHandler,
 ) {
-  const size = bytes.byteLength;
+  return uploadBinarySized(
+    notion,
+    uploadName,
+    contentType,
+    bytes.byteLength,
+    async (start, end) => bytes.subarray(start, end),
+    onProgress,
+  );
+}
 
+/** 从磁盘按区间读分片，大文件时峰值内存约 PART_SIZE */
+async function uploadBinaryFromPath(
+  notion: Client,
+  uploadName: string,
+  contentType: string,
+  filePath: string,
+  size: number,
+  onProgress?: UploadProgressHandler,
+) {
+  const fh = await fs.promises.open(filePath, "r");
+  try {
+    return await uploadBinarySized(
+      notion,
+      uploadName,
+      contentType,
+      size,
+      async (start, end) => {
+        const len = end - start;
+        const buf = Buffer.allocUnsafe(len);
+        const { bytesRead } = await fh.read(buf, 0, len, start);
+        if (bytesRead !== len) {
+          throw new Error(`读取本地分片失败（期望 ${len}，实际 ${bytesRead}）`);
+        }
+        return new Uint8Array(buf.buffer, buf.byteOffset, bytesRead);
+      },
+      onProgress,
+    );
+  } finally {
+    await fh.close();
+  }
+}
+
+async function uploadBinarySized(
+  notion: Client,
+  uploadName: string,
+  contentType: string,
+  size: number,
+  readRange: (start: number, end: number) => Promise<Uint8Array>,
+  onProgress?: UploadProgressHandler,
+) {
   try {
     if (size <= SINGLE_PART_LIMIT) {
       onProgress?.({ phase: "create", ratio: 0.05, message: "创建上传任务" });
@@ -703,13 +753,14 @@ async function uploadBinary(
       );
 
       onProgress?.({ phase: "send", ratio: 0.15, message: "发送到 Notion" });
+      const all = await readRange(0, size);
       await withNotionRetry(
         () =>
           notion.fileUploads.send({
             file_upload_id: created.id,
             file: {
               filename: uploadName,
-              data: toBlob(bytes, contentType),
+              data: toBlob(all, contentType),
             },
           }),
         "发送文件",
@@ -740,7 +791,7 @@ async function uploadBinary(
     for (let i = 0; i < numberOfParts; i++) {
       const start = i * PART_SIZE;
       const end = Math.min(start + PART_SIZE, size);
-      const part = bytes.subarray(start, end);
+      const part = await readRange(start, end);
       onProgress?.({
         phase: "send",
         ratio: 0.05 + (i / numberOfParts) * 0.83,
@@ -760,7 +811,6 @@ async function uploadBinary(
           }),
         `发送分片 ${i + 1}/${numberOfParts}`,
       );
-      // create 5% → send 完成后累计到 88%
       onProgress?.({
         phase: "send",
         ratio: 0.05 + ((i + 1) / numberOfParts) * 0.83,
@@ -805,11 +855,46 @@ export async function uploadFile(input: {
   folder?: string;
   onProgress?: UploadProgressHandler;
 }): Promise<UploadFileResult> {
-  const notion = getNotionClient();
-  // 网盘显示名 = 用户原始文件名（含 .ass 等）
   const displayName = input.filename;
   const folder = sanitizeFolder(input.folder);
   const size = input.file.size;
+  const browserMime = String((input.file as File).type || "").trim();
+  const lookedUp = String(mime.lookup(displayName) || "");
+  const rawMime = browserMime || lookedUp || "application/octet-stream";
+
+  // 小文件仍可走内存；大文件先落临时盘再分片（WebDAV 已直接用 uploadFileFromPath）
+  if (size > SINGLE_PART_LIMIT) {
+    const tmpDir = path.join(
+      process.env.DATA_DIR || path.join(process.cwd(), "data"),
+      "tmp",
+      "upload",
+    );
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = path.join(
+      tmpDir,
+      `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.bin`,
+    );
+    try {
+      const buf = Buffer.from(await input.file.arrayBuffer());
+      await fs.promises.writeFile(tmpPath, buf);
+      return await uploadFileFromPath({
+        filePath: tmpPath,
+        size,
+        filename: displayName,
+        folder,
+        mimeType: rawMime,
+        onProgress: input.onProgress,
+      });
+    } finally {
+      try {
+        await fs.promises.unlink(tmpPath);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const notion = getNotionClient();
   const onProgress = input.onProgress;
 
   // 同目录 + 同名 + 同大小 → 视为已存在，跳过上传
@@ -821,9 +906,6 @@ export async function uploadFile(input: {
   const limit = await getWorkspaceUploadLimit();
   assertWithinUploadLimit(size, limit, formatBytes);
 
-  const browserMime = String((input.file as File).type || "").trim();
-  const lookedUp = String(mime.lookup(displayName) || "");
-  const rawMime = browserMime || lookedUp || "application/octet-stream";
   // 交给 Notion 的安全扩展名 + MIME（.ass → .txt / text/plain）
   const { uploadName, contentType: uploadMime } = notionUploadIdentity(displayName, rawMime);
   const kind = detectKind(rawMime || uploadMime, displayName);
@@ -894,6 +976,133 @@ export async function uploadFile(input: {
     return { file: normalized, skipped: false };
   } catch (err) {
     // 页面已建但后续失败：尽量把已有页写入索引，避免孤儿；失败则尝试归档孤儿页
+    try {
+      const partial = await getFile(pageId);
+      const normalized: DriveFile = {
+        ...partial,
+        name: displayName || partial.name,
+      };
+      upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
+      onProgress?.({ phase: "page", ratio: 1, message: "完成（预览可选）" });
+      return { file: normalized, skipped: false };
+    } catch {
+      try {
+        await withNotionRetry(
+          () =>
+            notion.pages.update({
+              page_id: pageId,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ...({ in_trash: true } as any),
+            }),
+          "清理失败上传页",
+          1,
+        );
+      } catch {
+        try {
+          await notion.pages.update({ page_id: pageId, archived: true });
+        } catch {
+          // ignore
+        }
+      }
+      throw err;
+    }
+  }
+}
+
+/**
+ * 从本地临时文件上传（WebDAV 流式落盘后调用）。
+ * 峰值内存约单分片大小（10MiB），不把整文件读进 RAM。
+ */
+export async function uploadFileFromPath(input: {
+  filePath: string;
+  size: number;
+  filename: string;
+  folder?: string;
+  mimeType?: string;
+  onProgress?: UploadProgressHandler;
+}): Promise<UploadFileResult> {
+  const notion = getNotionClient();
+  const displayName = input.filename;
+  const folder = sanitizeFolder(input.folder);
+  const size = input.size;
+  const onProgress = input.onProgress;
+
+  const existing = findIndexFileByName(folder, displayName, size);
+  if (existing) {
+    return { file: existing, skipped: true };
+  }
+
+  const limit = await getWorkspaceUploadLimit();
+  assertWithinUploadLimit(size, limit, formatBytes);
+
+  const lookedUp = String(mime.lookup(displayName) || "");
+  const rawMime = (input.mimeType || "").trim() || lookedUp || "application/octet-stream";
+  const { uploadName, contentType: uploadMime } = notionUploadIdentity(
+    displayName,
+    rawMime,
+  );
+  const kind = detectKind(rawMime || uploadMime, displayName);
+
+  const fileUploadId = await uploadBinaryFromPath(
+    notion,
+    uploadName,
+    uploadMime,
+    input.filePath,
+    size,
+    onProgress
+      ? (p) =>
+          onProgress({
+            ...p,
+            ratio: Math.min(0.9, p.ratio),
+          })
+      : undefined,
+  );
+
+  const filePropName = displayName.length <= 100 ? displayName : uploadName;
+
+  onProgress?.({ phase: "page", ratio: 0.94, message: "写入网盘索引" });
+  const properties: Record<string, unknown> = {
+    Name: { title: richText(displayName) },
+    Folder: { rich_text: richText(folder) },
+    Size: { number: size },
+    MIME: {
+      rich_text: richText(
+        rawMime === "application/octet-stream" ? uploadMime : rawMime,
+      ),
+    },
+    Type: { select: { name: kind } },
+    File: {
+      files: [
+        {
+          type: "file_upload",
+          file_upload: { id: fileUploadId },
+          name: filePropName,
+        },
+      ],
+    },
+  };
+
+  let page: PageLike;
+  try {
+    page = await createPage(notion, properties);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `文件已传到 Notion 但写入网盘失败（可稍后点「刷新索引」）：${msg}`,
+    );
+  }
+
+  const pageId = page.id;
+  try {
+    onProgress?.({ phase: "page", ratio: 0.96, message: "添加 Notion 预览" });
+    await appendMediaPreview(notion, pageId, kind, fileUploadId, displayName);
+    onProgress?.({ phase: "page", ratio: 0.98, message: "更新列表" });
+    const file = await getFile(pageId);
+    const normalized: DriveFile = { ...file, name: displayName || file.name };
+    upsertIndexRow(driveFileToRow(normalized, isFolderMarker(normalized)));
+    onProgress?.({ phase: "page", ratio: 1, message: "完成" });
+    return { file: normalized, skipped: false };
+  } catch (err) {
     try {
       const partial = await getFile(pageId);
       const normalized: DriveFile = {

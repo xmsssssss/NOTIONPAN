@@ -2482,7 +2482,9 @@ export function DriveApp({
                   type="button"
                   className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200"
                   onClick={() => {
-                    void navigator.clipboard.writeText(shareUrl);
+                    void import("@/lib/client-file").then(({ copyTextToClipboard }) =>
+                      copyTextToClipboard(shareUrl),
+                    );
                   }}
                 >
                   复制
@@ -2516,7 +2518,9 @@ export function DriveApp({
                         className="rounded-md bg-white px-2 py-1 text-sky-600 ring-1 ring-slate-200"
                         onClick={() => {
                           const url = `${window.location.origin}/s/${s.token}`;
-                          void navigator.clipboard.writeText(url);
+                          void import("@/lib/client-file").then(({ copyTextToClipboard }) =>
+                            copyTextToClipboard(url),
+                          );
                           setShareUrl(url);
                         }}
                       >

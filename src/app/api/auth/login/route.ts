@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getPasswordVersion, publicAppConfig, readAppConfig } from "@/lib/app-config";
 import { getSession } from "@/lib/session";
+import {
+  checkRateLimit,
+  clearRateLimit,
+  clientIpFromRequest,
+  loginRateKey,
+  recordRateLimitFailure,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,11 +38,58 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "请输入账号和密码" }, { status: 400 });
     }
 
-    const userOk = username === cfg.username;
-    const passOk = userOk ? await bcrypt.compare(password, cfg.passwordHash) : false;
-    if (!userOk || !passOk) {
-      return NextResponse.json({ error: "账号或密码错误" }, { status: 401 });
+    const ip = clientIpFromRequest(req);
+    // 按 IP+用户名限流，避免拖垮同一 IP 多账号时误伤过大；也按 IP 单独限
+    const keyUser = loginRateKey(ip, username);
+    const keyIp = loginRateKey(ip, "*");
+    for (const key of [keyUser, keyIp]) {
+      const gate = checkRateLimit(key);
+      if (!gate.ok) {
+        return NextResponse.json(
+          { error: gate.message, retryAfterSec: gate.retryAfterSec },
+          {
+            status: 429,
+            headers: { "Retry-After": String(gate.retryAfterSec) },
+          },
+        );
+      }
     }
+
+    // 恒定耗时：即使用户名错误也做一次 compare，减轻用户名枚举
+    const dummyHash =
+      cfg.passwordHash || "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUV";
+    const userOk = username === cfg.username;
+    const passOk = await bcrypt.compare(
+      password,
+      userOk ? cfg.passwordHash : dummyHash,
+    );
+
+    if (!userOk || !passOk) {
+      const afterUser = recordRateLimitFailure(keyUser);
+      recordRateLimitFailure(keyIp);
+      if (!afterUser.ok) {
+        return NextResponse.json(
+          {
+            error: afterUser.message,
+            retryAfterSec: afterUser.retryAfterSec,
+          },
+          {
+            status: 429,
+            headers: { "Retry-After": String(afterUser.retryAfterSec) },
+          },
+        );
+      }
+      return NextResponse.json(
+        {
+          error: "账号或密码错误",
+          remainingAttempts: afterUser.remainingFree,
+        },
+        { status: 401 },
+      );
+    }
+
+    clearRateLimit(keyUser);
+    clearRateLimit(keyIp);
 
     const session = await getSession();
     session.isLoggedIn = true;

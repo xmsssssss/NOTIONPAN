@@ -413,6 +413,62 @@ function sortByCreatedDesc(a: IndexRow, b: IndexRow) {
   return (b.created_time || "").localeCompare(a.created_time || "");
 }
 
+/** 某逻辑路径的 .folder 占位页 */
+export function findFolderMarker(folderPath: string): DriveFile | null {
+  const f = folderPath;
+  if (ensureBackend() === "sqlite") {
+    const row = sqliteDb!
+      .prepare(
+        `
+        SELECT * FROM files
+        WHERE folder = ? AND is_folder_marker = 1
+        LIMIT 1
+      `,
+      )
+      .get(f) as IndexRow | undefined;
+    return row ? rowToDriveFile(row) : null;
+  }
+  const store = loadJsonStore();
+  const hit = store.files.find((r) => r.is_folder_marker === 1 && r.folder === f);
+  return hit ? rowToDriveFile(hit) : null;
+}
+
+/** 某路径及其子路径下全部文件（不含 folder marker） */
+export function listIndexFilesUnder(folderPath: string): DriveFile[] {
+  const f = folderPath === "/" ? "/" : folderPath;
+  if (ensureBackend() === "sqlite") {
+    if (f === "/") {
+      return (
+        sqliteDb!
+          .prepare(
+            `SELECT * FROM files WHERE is_folder_marker = 0 ORDER BY folder, name`,
+          )
+          .all() as IndexRow[]
+      ).map(rowToDriveFile);
+    }
+    return (
+      sqliteDb!
+        .prepare(
+          `
+          SELECT * FROM files
+          WHERE is_folder_marker = 0
+            AND (folder = ? OR folder LIKE ?)
+          ORDER BY folder, name
+        `,
+        )
+        .all(f, `${f}/%`) as IndexRow[]
+    ).map(rowToDriveFile);
+  }
+  const store = loadJsonStore();
+  return store.files
+    .filter((r) => {
+      if (r.is_folder_marker !== 0) return false;
+      if (f === "/") return true;
+      return r.folder === f || r.folder.startsWith(`${f}/`);
+    })
+    .map(rowToDriveFile);
+}
+
 /** 同目录下是否已有同名（可选再比大小）的文件 */
 export function findIndexFileByName(
   folder: string,
@@ -454,6 +510,27 @@ export function findIndexFileByName(
     return true;
   });
   return hit ? rowToDriveFile(hit) : null;
+}
+
+/** 某路径下全部索引行（含子树、含 folder marker） */
+export function listIndexRowsUnder(folderPath: string): IndexRow[] {
+  const f = folderPath === "/" ? "/" : folderPath;
+  if (ensureBackend() === "sqlite") {
+    if (f === "/") {
+      return sqliteDb!.prepare(`SELECT * FROM files`).all() as IndexRow[];
+    }
+    return sqliteDb!
+      .prepare(
+        `
+        SELECT * FROM files
+        WHERE folder = ? OR folder LIKE ?
+      `,
+      )
+      .all(f, `${f}/%`) as IndexRow[];
+  }
+  const store = loadJsonStore();
+  if (f === "/") return store.files.slice();
+  return store.files.filter((r) => r.folder === f || r.folder.startsWith(`${f}/`));
 }
 
 export function listIndexFiles(folder: string, query?: string): DriveFile[] {

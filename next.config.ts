@@ -25,6 +25,26 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "100mb",
     },
   },
+  /**
+   * WebDAV：对外 /webdav/* → Pages API /api/webdav/*
+   * 用 rewrites 比 middleware 更稳，catch-all query.path 能正确带上
+   */
+  async rewrites() {
+    return [
+      {
+        source: "/webdav",
+        destination: "/api/webdav",
+      },
+      {
+        source: "/webdav/",
+        destination: "/api/webdav",
+      },
+      {
+        source: "/webdav/:path*",
+        destination: "/api/webdav/:path*",
+      },
+    ];
+  },
 };
 
 export default nextConfig;

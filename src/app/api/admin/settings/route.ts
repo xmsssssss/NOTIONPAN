@@ -3,13 +3,25 @@ import bcrypt from "bcryptjs";
 import { publicAppConfig, readAppConfig, writeAppConfig } from "@/lib/app-config";
 import { withAuth } from "@/lib/auth-guard";
 import { getSession } from "@/lib/session";
-import { readEnvConfig, writeEnvConfig, softReloadEnv, ENV_KEYS } from "@/lib/runtime-env";
+import {
+  readEnvConfig,
+  writeEnvConfig,
+  softReloadEnv,
+  ENV_KEYS,
+  getRuntimeEnv,
+} from "@/lib/runtime-env";
 import { getSyncStatus } from "@/lib/drive";
+import { publicOrigin } from "@/lib/public-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+function webdavProxyEnabled(): boolean {
+  const v = (getRuntimeEnv("WEBDAV_PROXY_DOWNLOAD") || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+export async function GET(req: NextRequest) {
   return withAuth(async () => {
     const cfg = readAppConfig();
     const env = readEnvConfig();
@@ -19,6 +31,7 @@ export async function GET() {
     } catch {
       index = null;
     }
+    const origin = publicOrigin(req);
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(cfg),
@@ -26,6 +39,14 @@ export async function GET() {
       env: env.masked,
       envKeys: ENV_KEYS,
       index,
+      webdav: {
+        path: "/webdav/",
+        mountUrl: `${origin}/webdav/`,
+        auth: "basic",
+        username: cfg.username,
+        proxyDownload: webdavProxyEnabled(),
+        publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+      },
     });
   });
 }
@@ -98,6 +119,7 @@ export async function PUT(req: NextRequest) {
       index = null;
     }
 
+    const origin = publicOrigin(req);
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(next),
@@ -105,6 +127,14 @@ export async function PUT(req: NextRequest) {
       env: readEnvConfig().masked,
       envSaved,
       index,
+      webdav: {
+        path: "/webdav/",
+        mountUrl: `${origin}/webdav/`,
+        auth: "basic",
+        username: next.username,
+        proxyDownload: webdavProxyEnabled(),
+        publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+      },
     });
   });
 }

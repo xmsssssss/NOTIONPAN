@@ -11,7 +11,7 @@ import {
   IconUpload,
 } from "./icons";
 
-type TabId = "site" | "account" | "env" | "backup" | "index";
+type TabId = "site" | "account" | "env" | "webdav" | "backup" | "index";
 
 type Settings = {
   app: {
@@ -28,6 +28,14 @@ type Settings = {
     lastSyncAt?: string | null;
     bootstrapped?: boolean;
     backend?: string | null;
+  };
+  webdav?: {
+    path: string;
+    mountUrl: string;
+    auth: string;
+    username: string;
+    proxyDownload: boolean;
+    publicUrl: string;
   };
 };
 
@@ -50,6 +58,11 @@ const TABS: Array<{
     id: "env",
     label: "环境变量",
     icon: <IconFolder className="h-4 w-4" />,
+  },
+  {
+    id: "webdav",
+    label: "WebDAV",
+    icon: <IconUpload className="h-4 w-4" />,
   },
   {
     id: "index",
@@ -98,6 +111,9 @@ export function AdminPage({
   const [envWebhook, setEnvWebhook] = useState("");
 
   const [indexMeta, setIndexMeta] = useState<Settings["index"]>();
+  const [webdavMountUrl, setWebdavMountUrl] = useState("");
+  const [webdavProxy, setWebdavProxy] = useState(false);
+  const [publicUrl, setPublicUrl] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -117,6 +133,13 @@ export function AdminPage({
       setEnvWebhook(data.env?.NOTION_WEBHOOK_TOKEN || "");
       setEnvSecret(data.env?.SESSION_SECRET || "");
       setIndexMeta(data.index);
+      setWebdavMountUrl(data.webdav?.mountUrl || "");
+      setWebdavProxy(Boolean(data.webdav?.proxyDownload));
+      setPublicUrl(
+        data.webdav?.publicUrl ||
+          data.env?.PUBLIC_URL ||
+          "",
+      );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -215,6 +238,41 @@ export function AdminPage({
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveWebdav = async () => {
+    setBusy(true);
+    flash(null);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          env: {
+            PUBLIC_URL: publicUrl.trim(),
+            WEBDAV_PROXY_DOWNLOAD: webdavProxy ? "1" : "0",
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "保存失败");
+      if (data.webdav?.mountUrl) setWebdavMountUrl(data.webdav.mountUrl);
+      setWebdavProxy(Boolean(data.webdav?.proxyDownload));
+      flash("WebDAV 设置已保存");
+      onChanged();
+      await load();
+    } catch (e) {
+      flash(null, e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyText = async (text: string) => {
+    const { copyTextToClipboard } = await import("@/lib/client-file");
+    const ok = await copyTextToClipboard(text);
+    if (ok) flash("已复制到剪贴板");
+    else flash(null, "复制失败，请手动选择复制");
   };
 
   const reloadEnv = async () => {
@@ -665,6 +723,105 @@ export function AdminPage({
                       <code className="rounded bg-slate-100 px-1">page.created/deleted/properties_updated</code>
                       。未配置时外链仍轮询；页面变更需手动「刷新索引」。
                     </p>
+                  </Panel>
+                )}
+
+                {tab === "webdav" && (
+                  <Panel
+                    title="WebDAV 挂载"
+                    hint="用资源管理器 / Cyberduck / RaiDrive 等挂载网盘"
+                    actions={
+                      <BtnPrimary onClick={() => void saveWebdav()} disabled={busy}>
+                        {busy ? "保存中…" : "保存 WebDAV 设置"}
+                      </BtnPrimary>
+                    }
+                  >
+                    <div className="rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-sm text-slate-700">
+                      <div className="text-xs font-medium text-sky-800">挂载地址</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <code className="break-all rounded-lg bg-white px-2 py-1 text-xs text-slate-800 ring-1 ring-sky-100">
+                          {webdavMountUrl ||
+                            (typeof window !== "undefined"
+                              ? `${window.location.origin}/webdav/`
+                              : "/webdav/")}
+                        </code>
+                        <button
+                          type="button"
+                          className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200 hover:bg-sky-50"
+                          onClick={() =>
+                            void copyText(
+                              webdavMountUrl ||
+                                (typeof window !== "undefined"
+                                  ? `${window.location.origin}/webdav/`
+                                  : "/webdav/"),
+                            )
+                          }
+                        >
+                          复制
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                        认证：HTTP Basic · 用户名/密码与站点管理员相同（
+                        <span className="font-medium text-slate-700">{user || username}</span>
+                        ）。OpenList / Cyberduck 等填完整 URL（含{" "}
+                        <code className="rounded bg-white px-1">/webdav/</code>
+                        ）。
+                      </p>
+                    </div>
+
+                    <Field
+                      label="对外访问地址 PUBLIC_URL（可选）"
+                      value={publicUrl}
+                      onChange={setPublicUrl}
+                      placeholder="https://pan.example.com 或 http://IP:3000"
+                    />
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                      用于生成正确的挂载/分享链接。Docker 或反代时建议填写，避免出现{" "}
+                      <code className="rounded bg-slate-100 px-1">0.0.0.0</code>。
+                    </p>
+
+                    <div className="space-y-2">
+                      <div className="text-xs font-medium text-slate-600">下载方式</div>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+                        <input
+                          type="radio"
+                          name="webdav-dl"
+                          className="mt-1"
+                          checked={!webdavProxy}
+                          onChange={() => setWebdavProxy(false)}
+                        />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-800">
+                            302 跳转 Notion（推荐）
+                          </span>
+                          <span className="mt-0.5 block text-[11px] text-slate-500">
+                            本机不中转文件流量，省带宽；部分老旧 WebDAV 客户端可能不跟随跳转
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+                        <input
+                          type="radio"
+                          name="webdav-dl"
+                          className="mt-1"
+                          checked={webdavProxy}
+                          onChange={() => setWebdavProxy(true)}
+                        />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-800">
+                            本机反代（兼容优先）
+                          </span>
+                          <span className="mt-0.5 block text-[11px] text-slate-500">
+                            返回 200 文件流，兼容性更好；流量经过服务器
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2.5 text-[11px] leading-relaxed text-amber-900">
+                      已支持：列目录、上传下载、删、建夹、移动/复制文件与文件夹；反代模式下支持
+                      Range。仍不支持 LOCK；单文件大小受 Notion 套餐限制；复制会重新下载再上传。
+                    </div>
                   </Panel>
                 )}
 

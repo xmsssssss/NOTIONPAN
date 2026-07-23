@@ -10,7 +10,7 @@ type AuthStatus = {
   setupCompleted: boolean;
   siteTitle: string;
   siteDescription: string;
-  username: string;
+  username?: string;
   isLoggedIn: boolean;
   sessionUser: string | null;
   autoPlay?: boolean;
@@ -137,7 +137,7 @@ export function AuthShell() {
     return (
       <AdminPage
         siteTitle={status.siteTitle}
-        username={status.sessionUser || status.username}
+        username={status.sessionUser || status.username || ""}
         onBack={() => setView(status.hasNotionConfig ? "app" : "env")}
         onChanged={() => void refresh()}
         onLogout={async () => {
@@ -172,7 +172,7 @@ export function AuthShell() {
         <DriveApp
           siteTitle={status.siteTitle}
           siteDescription={status.siteDescription}
-          username={status.sessionUser || status.username}
+        username={status.sessionUser || status.username || ""}
           siteIcon={status.siteIcon}
           autoPlay={status.autoPlay !== false}
           onOpenAdmin={() => setView("admin")}

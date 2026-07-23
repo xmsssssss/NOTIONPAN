@@ -11,6 +11,8 @@ const ENV_KEYS = [
   "NOTION_WEBHOOK_TOKEN",
   /** 对外访问根地址，如 https://pan.example.com（分享链接用，避免 0.0.0.0） */
   "PUBLIC_URL",
+  /** WebDAV 下载：1=本机反代；0/空=302 到 Notion 临时链 */
+  "WEBDAV_PROXY_DOWNLOAD",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
