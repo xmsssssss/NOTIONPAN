@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import type { DriveFile } from "@/lib/types";
 import { fileDownloadHref } from "@/lib/client-file";
+import { isBrowsableArchive } from "@/lib/archive";
 import { listLyricFiles, listSubtitleFiles } from "@/lib/subtitle";
 import { isMarkdownFile, renderMarkdown } from "@/lib/markdown";
 import { formatBytes, formatDate } from "@/lib/utils";
@@ -22,6 +23,12 @@ function isTextFile(file: DriveFile): boolean {
   }
   return TEXT_EXTS.test(file.name);
 }
+
+type ArchiveEntry = {
+  name: string;
+  size: number;
+  isDir: boolean;
+};
 
 function LoadingBlock({ label = "加载中…" }: { label?: string }) {
   return (
@@ -192,6 +199,12 @@ export function PreviewModal({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [pdfLoaded, setPdfLoaded] = useState(false);
+  const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[] | null>(
+    null,
+  );
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [archiveFilter, setArchiveFilter] = useState("");
   // 手机默认收起，避免一打开就被列表盖住播放器；桌面侧栏始终显示
   const [listOpen, setListOpen] = useState(false);
 
@@ -202,11 +215,48 @@ export function PreviewModal({
     setTextContent(null);
     setTextError(null);
     setMdMode("preview");
+    setArchiveEntries(null);
+    setArchiveError(null);
+    setArchiveFilter("");
+    setArchiveLoading(false);
 
     // PDF object/iframe 部分浏览器不触发 onLoad，超时后去掉遮罩
     let pdfTimer: ReturnType<typeof setTimeout> | null = null;
     if (file.kind === "pdf") {
       pdfTimer = setTimeout(() => setPdfLoaded(true), 2500);
+    }
+
+    let cancelled = false;
+    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+
+    // 压缩包列表
+    if (isBrowsableArchive(file.name, file.mimeType)) {
+      setArchiveLoading(true);
+      fetch(`/api/files/${file.id}/archive`, {
+        credentials: "include",
+        signal: ac?.signal,
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "无法解析压缩包");
+          if (cancelled) return;
+          setArchiveEntries(
+            Array.isArray(data.entries) ? (data.entries as ArchiveEntry[]) : [],
+          );
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof Error && err.name === "AbortError") return;
+          setArchiveError(err instanceof Error ? err.message : "解析失败");
+        })
+        .finally(() => {
+          if (!cancelled) setArchiveLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        ac?.abort();
+        if (pdfTimer) clearTimeout(pdfTimer);
+      };
     }
 
     if (!isTextFile(file)) {
@@ -215,9 +265,6 @@ export function PreviewModal({
       };
     }
     setLoadingText(true);
-
-    let cancelled = false;
-    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
 
     fetch(`/api/files/${file.id}/download?proxy=1`, {
       credentials: "include",
@@ -364,7 +411,7 @@ export function PreviewModal({
           </a>
         </div>
 
-        <div className="relative flex min-h-0 flex-1 overflow-hidden bg-white">
+        <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[var(--panel)]">
           {/* 桌面：左侧播放列表 */}
           {showPlaylist && (
             <aside className="hidden w-52 shrink-0 flex-col border-r border-slate-200 bg-slate-50/90 sm:flex md:w-56">
@@ -552,7 +599,7 @@ export function PreviewModal({
             )}
 
             {file.kind === "video" && (
-              <div className="flex h-full min-h-0 w-full flex-col bg-black sm:bg-white sm:p-2">
+              <div className="flex h-full min-h-0 w-full flex-col bg-black sm:bg-[var(--panel)] sm:p-2">
                 <div className="flex min-h-0 flex-1 items-center justify-center">
                   <MediaPlayer
                     key={file.id}
@@ -708,7 +755,89 @@ export function PreviewModal({
               </div>
             )}
 
-            {file.kind === "file" && !isTextFile(file) && (
+            {file.kind === "file" &&
+              isBrowsableArchive(file.name, file.mimeType) && (
+              <div className="flex h-full min-h-0 w-full flex-col bg-white">
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/90 px-3 py-2 sm:px-4">
+                  <span className="text-sm font-medium text-slate-700">压缩包内容</span>
+                  <span className="text-xs text-slate-400">
+                    {archiveEntries ? `${archiveEntries.length} 项` : ""}
+                  </span>
+                  <input
+                    value={archiveFilter}
+                    onChange={(e) => setArchiveFilter(e.target.value)}
+                    placeholder="筛选路径…"
+                    className="ml-auto w-full max-w-xs rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-sky-400 sm:w-48"
+                  />
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto">
+                  {archiveLoading ? (
+                    <div className="flex h-full items-center justify-center p-8">
+                      <LoadingBlock label="解析压缩包…" />
+                    </div>
+                  ) : archiveError ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                      <p className="text-sm text-slate-500">{archiveError}</p>
+                      <a
+                        href={src}
+                        className="inline-flex items-center gap-2 rounded-xl bg-sky-500 px-4 py-2 text-sm font-medium text-white"
+                      >
+                        <IconDownload className="h-4 w-4" />
+                        下载原文件
+                      </a>
+                    </div>
+                  ) : (
+                    <table className="w-full min-w-[320px] text-left text-xs sm:text-sm">
+                      <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-medium sm:px-4">名称</th>
+                          <th className="w-24 px-3 py-2 font-medium sm:px-4">大小</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(archiveEntries || [])
+                          .filter((e) => {
+                            const q = archiveFilter.trim().toLowerCase();
+                            if (!q) return true;
+                            return e.name.toLowerCase().includes(q);
+                          })
+                          .slice(0, 2000)
+                          .map((e) => (
+                            <tr
+                              key={e.name}
+                              className="border-t border-slate-100 text-slate-700"
+                            >
+                              <td className="max-w-[1px] truncate px-3 py-1.5 font-mono text-[11px] sm:px-4 sm:text-xs">
+                                {e.isDir ? (
+                                  <span className="text-amber-700">📁 {e.name}/</span>
+                                ) : (
+                                  e.name
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-1.5 text-slate-400 sm:px-4">
+                                {e.isDir ? "—" : formatBytes(e.size)}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center justify-between border-t border-slate-100 bg-slate-50/80 px-3 py-2 sm:px-4">
+                  <span className="text-[11px] text-slate-400">仅列表 · 不解压到服务器</span>
+                  <a
+                    href={src}
+                    className="text-xs font-medium text-sky-600 hover:underline"
+                  >
+                    下载压缩包
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {file.kind === "file" &&
+              !isTextFile(file) &&
+              !isBrowsableArchive(file.name, file.mimeType) && (
               <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
                 <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 shadow-inner sm:h-24 sm:w-24">
                   <FileIcon kind={file.kind} name={file.name} className="h-12 w-12 sm:h-14 sm:w-14" />

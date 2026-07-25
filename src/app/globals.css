@@ -15,6 +15,35 @@
   --danger: #ef4444;
   --ok: #16a34a;
   --shadow: 0 10px 40px rgba(79, 124, 255, 0.08);
+  --body-grad:
+    radial-gradient(1000px 500px at 0% -10%, rgba(79, 124, 255, 0.18), transparent 55%),
+    radial-gradient(900px 480px at 100% 0%, rgba(34, 195, 181, 0.16), transparent 50%),
+    radial-gradient(700px 400px at 50% 100%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #f8faff 0%, #eef4ff 45%, #f5fbfa 100%);
+  --scrollbar-thumb: #c5d4ef;
+  --glass: rgba(255, 255, 255, 0.82);
+}
+
+html.dark {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --panel: #141c2e;
+  --panel-2: #1a2438;
+  --border: #2a3650;
+  --text: #e8eef9;
+  --muted: #94a3b8;
+  --accent: #6b8cff;
+  --accent-2: #2dd4bf;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  --body-grad:
+    radial-gradient(900px 480px at 0% -10%, rgba(79, 124, 255, 0.14), transparent 55%),
+    radial-gradient(800px 420px at 100% 0%, rgba(34, 195, 181, 0.1), transparent 50%),
+    radial-gradient(600px 360px at 50% 100%, rgba(99, 102, 241, 0.1), transparent 55%),
+    linear-gradient(180deg, #0b1220 0%, #0f172a 50%, #0c1526 100%);
+  --scrollbar-thumb: #3d4f6f;
+  --glass: rgba(20, 28, 46, 0.88);
 }
 
 * {
@@ -27,11 +56,7 @@ body {
   padding: 0;
   min-height: 100%;
   min-height: 100dvh;
-  background:
-    radial-gradient(1000px 500px at 0% -10%, rgba(79, 124, 255, 0.18), transparent 55%),
-    radial-gradient(900px 480px at 100% 0%, rgba(34, 195, 181, 0.16), transparent 50%),
-    radial-gradient(700px 400px at 50% 100%, rgba(167, 139, 250, 0.12), transparent 55%),
-    linear-gradient(180deg, #f8faff 0%, #eef4ff 45%, #f5fbfa 100%);
+  background: var(--body-grad);
   color: var(--text);
   font-family:
     ui-sans-serif,
@@ -136,7 +161,7 @@ textarea {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c5d4ef;
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-track {
@@ -144,9 +169,151 @@ textarea {
 }
 
 .glass-panel {
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--glass);
   backdrop-filter: blur(12px);
   box-shadow: var(--shadow);
+}
+
+/* 深色：覆盖常用 Tailwind 浅色面，避免整站逐文件改 class */
+html.dark .bg-white {
+  background-color: var(--panel) !important;
+}
+html.dark .bg-white\/90,
+html.dark .bg-white\/95 {
+  background-color: color-mix(in srgb, var(--panel) 92%, transparent) !important;
+}
+html.dark .bg-slate-50,
+html.dark .bg-slate-50\/80,
+html.dark .bg-slate-50\/90 {
+  background-color: var(--panel-2) !important;
+}
+html.dark .bg-slate-100,
+html.dark .bg-slate-100\/80 {
+  background-color: #1e293b !important;
+}
+html.dark .from-slate-50,
+html.dark .via-white,
+html.dark .to-sky-50 {
+  --tw-gradient-from: #0f172a !important;
+  --tw-gradient-via: #141c2e !important;
+  --tw-gradient-to: #0c1929 !important;
+}
+html.dark .text-slate-800,
+html.dark .text-slate-700 {
+  color: var(--text) !important;
+}
+html.dark .text-slate-600,
+html.dark .text-slate-500 {
+  color: var(--muted) !important;
+}
+html.dark .text-slate-400 {
+  color: #7c8ca8 !important;
+}
+html.dark .border-slate-200,
+html.dark .border-slate-100,
+html.dark .border-slate-200\/80 {
+  border-color: var(--border) !important;
+}
+html.dark .border-white\/50 {
+  border-color: rgba(42, 54, 80, 0.8) !important;
+}
+html.dark .bg-slate-900\/25,
+html.dark .bg-slate-900\/40,
+html.dark .bg-slate-900\/70 {
+  background-color: rgba(0, 0, 0, 0.55) !important;
+}
+html.dark .shadow-sm,
+html.dark .shadow-lg,
+html.dark .shadow-xl,
+html.dark .shadow-2xl {
+  --tw-shadow-color: rgba(0, 0, 0, 0.4);
+}
+html.dark .np-md-body {
+  color: var(--text);
+  background: var(--panel);
+}
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #64748b;
+}
+
+/* 深色：半透明白 / 渐变底 / 天空浅色 */
+html.dark .bg-white\/80 {
+  background-color: color-mix(in srgb, var(--panel) 88%, transparent) !important;
+}
+html.dark .bg-slate-50\/60 {
+  background-color: color-mix(in srgb, var(--panel-2) 85%, transparent) !important;
+}
+html.dark .from-sky-50\/80,
+html.dark .from-sky-50 {
+  --tw-gradient-from: #1a2740 !important;
+}
+html.dark .to-white {
+  --tw-gradient-to: var(--panel) !important;
+}
+html.dark .via-white {
+  --tw-gradient-via: var(--panel) !important;
+}
+html.dark .border-sky-100 {
+  border-color: #2a4060 !important;
+}
+html.dark .border-slate-200\/80 {
+  border-color: var(--border) !important;
+}
+html.dark .sm\:bg-white {
+  background-color: var(--panel) !important;
+}
+html.dark .hover\:bg-white\/80:hover {
+  background-color: color-mix(in srgb, var(--panel) 90%, transparent) !important;
+}
+html.dark .hover\:bg-slate-100:hover,
+html.dark .hover\:bg-slate-50:hover {
+  background-color: #1e293b !important;
+}
+html.dark .active\:bg-slate-50:active,
+html.dark .active\:bg-slate-100:active {
+  background-color: #1e293b !important;
+}
+html.dark .ring-slate-200 {
+  --tw-ring-color: var(--border) !important;
+}
+html.dark .text-sky-700 {
+  color: #7dd3fc !important;
+}
+
+
+
+/* 主题小人（图片） */
+.theme-chibi {
+  color: inherit;
+  filter: drop-shadow(0 4px 8px rgba(15, 23, 42, 0.12));
+}
+html.dark .theme-chibi {
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.45));
+}
+.theme-chibi-bounce {
+  animation: theme-chibi-bounce 0.38s ease;
+}
+@keyframes theme-chibi-bounce {
+  0% { transform: translateY(0) scale(1); }
+  40% { transform: translateY(-8px) scale(1.06); }
+  100% { transform: translateY(0) scale(1); }
+}
+.theme-chibi-img {
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.theme-chibi-shadow {
+  display: none;
 }
 
 .btn-primary {

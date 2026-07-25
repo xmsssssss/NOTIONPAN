@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
+import { shouldProxyResourceAccess } from "@/lib/app-config";
 import { getFile } from "@/lib/drive";
 import { formatNetworkError } from "@/lib/utils";
 
@@ -20,13 +21,22 @@ function isTextLike(mime: string, name: string): boolean {
 
 /**
  * 登录态下载 / 预览：
- * - 默认 302 → Notion 临时链（图片/视频/音频/下载）
- * - ?proxy=1 同源反代：文本预览、PDF（Edge 等无法 iframe 外链 PDF）
+ * - 网站设置 resourceAccess=redirect（默认）：302 → Notion
+ * - resourceAccess=proxy：本机反代
+ * - ?proxy=1 强制反代（文本/PDF 预览）；?proxy=0 强制 302
  */
 export async function GET(req: NextRequest, ctx: Ctx) {
   return withAuth(async () => {
     const { id } = await ctx.params;
-    const useProxy = req.nextUrl.searchParams.get("proxy") === "1";
+    const proxyParam = req.nextUrl.searchParams.get("proxy");
+    const siteProxy = shouldProxyResourceAccess();
+    // 显式 query 优先，否则跟网站设置
+    const useProxy =
+      proxyParam === "1"
+        ? true
+        : proxyParam === "0"
+          ? false
+          : siteProxy;
 
     let file;
     try {
@@ -52,7 +62,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: "非法下载地址" }, { status: 400 });
     }
 
-    // 媒体/下载：302 到 Notion（PDF 预览请走 proxy，避免跨域 iframe 被 Edge 拦截）
+    // 302 到 Notion（省本机流量）
     if (!useProxy) {
       return NextResponse.redirect(file.downloadUrl, 302);
     }

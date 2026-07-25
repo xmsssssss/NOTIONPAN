@@ -821,7 +821,7 @@ export function MediaPlayer({
           </div>
         </div>
       ) : (
-        <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
+        <div className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)] shadow-lg">
           <div className="relative px-3 pb-3 pt-4 sm:px-4 sm:pb-4 sm:pt-5">
               <div className="mb-3 flex flex-col items-center text-center sm:mb-4">
                 <div className="relative mb-3">
@@ -859,7 +859,7 @@ export function MediaPlayer({
 
               {/* 歌词区：固定高度，可滚动，当前句居中 */}
               {kind === "audio" && (
-                <div className="mb-3 h-40 overflow-hidden rounded-xl border border-sky-100 bg-gradient-to-b from-sky-50/80 to-white sm:h-44">
+                <div className="mb-3 h-40 overflow-hidden rounded-xl border border-[var(--border)] bg-gradient-to-b from-[var(--panel-2)] to-[var(--panel)] sm:h-44">
                   {subLoading ? (
                     <div className="flex h-full items-center justify-center text-xs text-slate-400">
                       歌词加载中…
@@ -928,7 +928,7 @@ export function MediaPlayer({
                 />
               )}
 
-              <div className="rounded-xl border border-slate-100 bg-slate-50/90 px-3 py-2.5 shadow-inner">
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2.5 shadow-inner">
                 <Controls
                   kind={kind}
                   playing={playing}

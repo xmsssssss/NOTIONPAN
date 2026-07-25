@@ -10,8 +10,16 @@ import {
   IconSettings,
   IconUpload,
 } from "./icons";
+import { ThemeToggle } from "./ThemeToggle";
 
-type TabId = "site" | "account" | "env" | "webdav" | "backup" | "index";
+type TabId =
+  | "site"
+  | "account"
+  | "env"
+  | "webdav"
+  | "webhook"
+  | "backup"
+  | "index";
 
 type Settings = {
   app: {
@@ -20,6 +28,7 @@ type Settings = {
     username?: string;
     autoPlay?: boolean;
     siteIcon?: string;
+    resourceAccess?: "redirect" | "proxy";
   };
   account: { username: string };
   env: Record<string, string>;
@@ -36,6 +45,14 @@ type Settings = {
     username: string;
     proxyDownload: boolean;
     publicUrl: string;
+  };
+  webhook?: {
+    endpointPath: string;
+    callbackUrl: string;
+    configured: boolean;
+    tokenMasked: string;
+    publicUrl: string;
+    subscribe: string[];
   };
 };
 
@@ -63,6 +80,11 @@ const TABS: Array<{
     id: "webdav",
     label: "WebDAV",
     icon: <IconUpload className="h-4 w-4" />,
+  },
+  {
+    id: "webhook",
+    label: "Webhook",
+    icon: <IconRefresh className="h-4 w-4" />,
   },
   {
     id: "index",
@@ -100,6 +122,10 @@ export function AdminPage({
   const [desc, setDesc] = useState("");
   const [autoPlay, setAutoPlay] = useState(true);
   const [siteIcon, setSiteIcon] = useState("N");
+  /** redirect=302 | proxy=本机反代 */
+  const [resourceAccess, setResourceAccess] = useState<"redirect" | "proxy">(
+    "redirect",
+  );
   const [user, setUser] = useState(username);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -114,6 +140,10 @@ export function AdminPage({
   const [webdavMountUrl, setWebdavMountUrl] = useState("");
   const [webdavProxy, setWebdavProxy] = useState(false);
   const [publicUrl, setPublicUrl] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookConfigured, setWebhookConfigured] = useState(false);
+  const [webhookToken, setWebhookToken] = useState("");
+  const [webhookSubscribe, setWebhookSubscribe] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -126,6 +156,9 @@ export function AdminPage({
       setDesc(data.app?.siteDescription || "");
       setAutoPlay(data.app?.autoPlay !== false);
       setSiteIcon((data.app?.siteIcon || "N").slice(0, 2) || "N");
+      setResourceAccess(
+        data.app?.resourceAccess === "proxy" ? "proxy" : "redirect",
+      );
       setUser(data.account?.username || "");
       setEnvKey(data.env?.NOTION_API_KEY || "");
       setEnvDb(data.env?.NOTION_DATABASE_ID || "");
@@ -139,6 +172,12 @@ export function AdminPage({
         data.webdav?.publicUrl ||
           data.env?.PUBLIC_URL ||
           "",
+      );
+      setWebhookUrl(data.webhook?.callbackUrl || "");
+      setWebhookConfigured(Boolean(data.webhook?.configured));
+      setWebhookToken(data.env?.NOTION_WEBHOOK_TOKEN || data.webhook?.tokenMasked || "");
+      setWebhookSubscribe(
+        Array.isArray(data.webhook?.subscribe) ? data.webhook.subscribe : [],
       );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "加载失败");
@@ -167,6 +206,7 @@ export function AdminPage({
           siteTitle: title,
           siteDescription: desc,
           autoPlay,
+          resourceAccess,
           siteIcon,
         }),
       });
@@ -273,6 +313,64 @@ export function AdminPage({
     const ok = await copyTextToClipboard(text);
     if (ok) flash("已复制到剪贴板");
     else flash(null, "复制失败，请手动选择复制");
+  };
+
+  const saveWebhook = async () => {
+    setBusy(true);
+    flash(null);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          env: {
+            PUBLIC_URL: publicUrl.trim(),
+            NOTION_WEBHOOK_TOKEN: webhookToken,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "保存失败");
+      if (data.webhook?.callbackUrl) setWebhookUrl(data.webhook.callbackUrl);
+      setWebhookConfigured(Boolean(data.webhook?.configured));
+      flash("Webhook 设置已保存");
+      onChanged();
+      await load();
+    } catch (e) {
+      flash(null, e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearWebhookToken = async () => {
+    if (
+      !confirm(
+        "清空 NOTION_WEBHOOK_TOKEN 后，需在 Notion 重新完成 Webhook 校验。确定？",
+      )
+    ) {
+      return;
+    }
+    setWebhookToken("");
+    setBusy(true);
+    flash(null);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          env: { NOTION_WEBHOOK_TOKEN: "" },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "清空失败");
+      flash("已清空 Webhook 令牌，可重新在 Notion 验证");
+      await load();
+    } catch (e) {
+      flash(null, e instanceof Error ? e.message : "清空失败");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const reloadEnv = async () => {
@@ -419,10 +517,10 @@ export function AdminPage({
   const currentTab = TABS.find((t) => t.id === tab)!;
 
   return (
-    <div className="safe-top safe-bottom h-[100dvh] max-h-[100dvh] overflow-y-auto overscroll-contain bg-gradient-to-br from-slate-50 via-white to-sky-50">
+    <div className="safe-top safe-bottom h-[100dvh] max-h-[100dvh] overflow-y-auto overscroll-contain bg-[var(--bg)]">
       <div className="mx-auto flex min-h-full max-w-6xl">
         {/* Desktop sidebar */}
-        <aside className="hidden w-64 shrink-0 border-r border-slate-200/80 bg-white/80 p-4 backdrop-blur md:flex md:flex-col">
+        <aside className="hidden w-64 shrink-0 border-r border-[var(--border)] bg-[var(--panel)]/90 p-4 backdrop-blur md:flex md:flex-col">
           <div className="mb-6 px-2">
             <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-sky-600">
               管理
@@ -484,7 +582,7 @@ export function AdminPage({
         {/* Main */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Top bar */}
-          <header className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-slate-200/80 bg-white/95 px-3 py-2.5 backdrop-blur sm:gap-3 sm:px-6 sm:py-3">
+          <header className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--panel)]/95 px-3 py-2.5 backdrop-blur sm:gap-3 sm:px-6 sm:py-3">
             <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               {/* 手机：左侧直接返回网盘 */}
               <button
@@ -505,6 +603,7 @@ export function AdminPage({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              <ThemeToggle compact />
               <button
                 type="button"
                 onClick={onBack}
@@ -599,15 +698,13 @@ export function AdminPage({
                 {tab === "site" && (
                   <Panel
                     title="网站设置"
-                    hint="标题、图标与媒体播放行为"
+                    hint="标题、图标、访问方式与媒体播放"
                     actions={
                       <BtnPrimary onClick={() => void saveSite()} disabled={busy}>
                         {busy ? "保存中…" : "保存"}
                       </BtnPrimary>
                     }
                   >
-                    <Field label="网站标题" value={title} onChange={setTitle} />
-                    <Field label="副标题 / 描述" value={desc} onChange={setDesc} />
                     <label className="block space-y-1.5">
                       <span className="text-sm font-medium text-slate-700">网站图标</span>
                       <div className="flex items-center gap-3">
@@ -624,20 +721,53 @@ export function AdminPage({
                         <span className="text-xs text-slate-400">1～2 个字符，显示在顶栏</span>
                       </div>
                     </label>
-                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                      <input
-                        type="checkbox"
-                        checked={autoPlay}
-                        onChange={(e) => setAutoPlay(e.target.checked)}
-                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-400"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-slate-700">媒体自动播放</span>
-                        <span className="mt-0.5 block text-xs text-slate-500">
+                    <Field label="网站标题" value={title} onChange={setTitle} />
+                    <Field label="副标题 / 描述" value={desc} onChange={setDesc} />
+
+                    <div className="space-y-2">
+                      <span className="block text-sm font-medium text-slate-700">媒体自动播放</span>
+                      <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={autoPlay}
+                          onChange={(e) => setAutoPlay(e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-400"
+                        />
+                        <span className="text-sm text-slate-700">
                           开启后，预览视频 / 音频时自动开始播放
                         </span>
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <span className="block text-sm font-medium text-slate-700">
+                        访问设置 · 资源访问方式
                       </span>
-                    </label>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+                        <input
+                          type="radio"
+                          name="resource-access"
+                          className="mt-1"
+                          checked={resourceAccess === "redirect"}
+                          onChange={() => setResourceAccess("redirect")}
+                        />
+                        <span className="block text-sm font-medium text-slate-800">
+                          302 跳转 Notion（默认）
+                        </span>
+                      </label>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+                        <input
+                          type="radio"
+                          name="resource-access"
+                          className="mt-1"
+                          checked={resourceAccess === "proxy"}
+                          onChange={() => setResourceAccess("proxy")}
+                        />
+                        <span className="block text-sm font-medium text-slate-800">
+                          服务器代理访问
+                        </span>
+                      </label>
+                    </div>
                   </Panel>
                 )}
 
@@ -723,6 +853,117 @@ export function AdminPage({
                       <code className="rounded bg-slate-100 px-1">page.created/deleted/properties_updated</code>
                       。未配置时外链仍轮询；页面变更需手动「刷新索引」。
                     </p>
+                  </Panel>
+                )}
+
+                {tab === "webhook" && (
+                  <Panel
+                    title="Webhook 配置向导"
+                    hint="公网 HTTPS 下接收 Notion 增量事件，加快索引与链接导入"
+                    actions={
+                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                        <BtnGhost onClick={() => void clearWebhookToken()} disabled={busy}>
+                          清空令牌
+                        </BtnGhost>
+                        <BtnPrimary onClick={() => void saveWebhook()} disabled={busy}>
+                          {busy ? "保存中…" : "保存"}
+                        </BtnPrimary>
+                      </div>
+                    }
+                  >
+                    <div className="space-y-3">
+                      <div
+                        className={`rounded-xl border px-3 py-2.5 text-sm ${
+                          webhookConfigured
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                            : "border-amber-200 bg-amber-50 text-amber-900"
+                        }`}
+                      >
+                        {webhookConfigured
+                          ? "已配置校验令牌，业务事件将验签后处理。"
+                          : "尚未配置令牌。在 Notion 添加 Webhook 并完成首次校验后，令牌会自动写入；也可手动粘贴。"}
+                      </div>
+
+                      <div className="rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-sm">
+                        <div className="text-xs font-medium text-sky-800">
+                          ① 回调 URL（填到 Notion Webhook）
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <code className="min-w-0 flex-1 break-all rounded-lg bg-white px-2 py-1 text-xs text-slate-800 ring-1 ring-sky-100">
+                            {webhookUrl ||
+                              (typeof window !== "undefined"
+                                ? `${window.location.origin}/api/webhooks/notion`
+                                : "/api/webhooks/notion")}
+                          </code>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200 hover:bg-sky-50"
+                            onClick={() =>
+                              void copyText(
+                                webhookUrl ||
+                                  (typeof window !== "undefined"
+                                    ? `${window.location.origin}/api/webhooks/notion`
+                                    : "/api/webhooks/notion"),
+                              )
+                            }
+                          >
+                            复制
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[11px] text-slate-500">
+                          必须是公网 <strong>HTTPS</strong>。本机局域网 HTTP 无法被 Notion 回调。
+                        </p>
+                      </div>
+
+                      <Field
+                        label="② 对外访问地址 PUBLIC_URL（可选）"
+                        value={publicUrl}
+                        onChange={setPublicUrl}
+                        placeholder="https://pan.example.com"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        用于生成正确的回调 URL / 分享链接。Docker 或反代后建议填写。
+                      </p>
+
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                        <div className="text-xs font-medium text-slate-700">
+                          ③ 建议订阅事件
+                        </div>
+                        <ul className="mt-2 space-y-1 text-[11px] text-slate-600">
+                          {(webhookSubscribe.length
+                            ? webhookSubscribe
+                            : [
+                                "file_upload.completed",
+                                "file_upload.upload_failed",
+                                "file_upload.expired",
+                                "page.created",
+                                "page.deleted",
+                                "page.undeleted",
+                                "page.properties_updated",
+                              ]
+                          ).map((ev) => (
+                            <li key={ev}>
+                              <code className="rounded bg-white px-1 ring-1 ring-slate-200">
+                                {ev}
+                              </code>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <Field
+                        label="④ 校验令牌 NOTION_WEBHOOK_TOKEN"
+                        value={webhookToken}
+                        onChange={setWebhookToken}
+                        placeholder="校验成功后自动写入，也可从 Notion 复制粘贴"
+                      />
+                      <p className="text-[11px] leading-relaxed text-slate-500">
+                        首次在 Notion 保存 Webhook 时会向回调 URL 发送{" "}
+                        <code className="rounded bg-slate-100 px-1">verification_token</code>
+                        ；未配置时可自动写入。已配置后拒绝覆盖（防劫持），需先「清空令牌」。
+                        未配置 Webhook 时，请在后台「索引同步」手动刷新。
+                      </p>
+                    </div>
                   </Panel>
                 )}
 

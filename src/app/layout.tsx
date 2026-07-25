@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { readAppConfig } from "@/lib/app-config";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const cfg = (() => {
   try {
@@ -32,12 +33,18 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 5,
   viewportFit: "cover",
-  themeColor: "#4f7cff",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#4f7cff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1220" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" className="h-full overflow-hidden">
+    <html lang="zh-CN" className="h-full overflow-hidden" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="h-full overflow-hidden antialiased">
         {children}
       </body>

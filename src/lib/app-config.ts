@@ -1,6 +1,9 @@
 import fs from "fs";
 import path from "path";
 
+/** 登录用户访问文件资源的默认方式 */
+export type ResourceAccessMode = "redirect" | "proxy";
+
 export type AppConfig = {
   username: string;
   passwordHash: string;
@@ -10,6 +13,11 @@ export type AppConfig = {
   autoPlay: boolean;
   /** 站点图标字母，1 个字符，默认 N */
   siteIcon: string;
+  /**
+   * 资源访问：redirect=302 到 Notion（省流量，默认）；
+   * proxy=本机反代（兼容差网络/部分客户端）
+   */
+  resourceAccess: ResourceAccessMode;
   setupCompleted: boolean;
   /** 改密后递增，用于使旧 session 失效 */
   passwordVersion: string;
@@ -23,10 +31,21 @@ const DEFAULT_CONFIG: AppConfig = {
   siteDescription: "Notion 存储 · 网盘体验",
   autoPlay: true,
   siteIcon: "N",
+  resourceAccess: "redirect",
   setupCompleted: false,
   passwordVersion: "0",
   updatedAt: null,
 };
+
+export function normalizeResourceAccess(
+  raw?: string | null,
+): ResourceAccessMode {
+  const v = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (v === "proxy" || v === "1" || v === "true") return "proxy";
+  return "redirect";
+}
 
 function dataDir() {
   const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -118,6 +137,10 @@ export function readAppConfig(): AppConfig {
       ...raw,
       autoPlay: typeof raw.autoPlay === "boolean" ? raw.autoPlay : DEFAULT_CONFIG.autoPlay,
       siteIcon: normalizeSiteIcon(raw.siteIcon ?? DEFAULT_CONFIG.siteIcon),
+      resourceAccess: normalizeResourceAccess(
+        (raw as { resourceAccess?: string }).resourceAccess ??
+          DEFAULT_CONFIG.resourceAccess,
+      ),
       passwordVersion:
         typeof raw.passwordVersion === "string" && raw.passwordVersion
           ? raw.passwordVersion
@@ -172,6 +195,11 @@ export function writeAppConfig(next: Partial<AppConfig>): AppConfig {
     ),
     autoPlay:
       typeof next.autoPlay === "boolean" ? next.autoPlay : current.autoPlay,
+    resourceAccess: normalizeResourceAccess(
+      next.resourceAccess !== undefined
+        ? next.resourceAccess
+        : current.resourceAccess,
+    ),
     passwordVersion,
     updatedAt: new Date().toISOString(),
   };
@@ -192,7 +220,13 @@ export function publicAppConfig(cfg = readAppConfig()) {
     siteDescription: corrupt ? "" : cfg.siteDescription || "",
     autoPlay: cfg.autoPlay !== false,
     siteIcon: normalizeSiteIcon(cfg.siteIcon),
+    resourceAccess: normalizeResourceAccess(cfg.resourceAccess),
     username: !corrupt && cfg.setupCompleted ? cfg.username : "",
     configCorrupt: corrupt || undefined,
   };
+}
+
+/** 登录下载默认是否走本机反代（可被 ?proxy=1 强制） */
+export function shouldProxyResourceAccess(cfg = readAppConfig()): boolean {
+  return normalizeResourceAccess(cfg.resourceAccess) === "proxy";
 }

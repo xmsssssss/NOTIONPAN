@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
       index = null;
     }
     const origin = publicOrigin(req);
+    const webhookToken = (getRuntimeEnv("NOTION_WEBHOOK_TOKEN") || "").trim();
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(cfg),
@@ -46,6 +47,22 @@ export async function GET(req: NextRequest) {
         username: cfg.username,
         proxyDownload: webdavProxyEnabled(),
         publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+      },
+      webhook: {
+        endpointPath: "/api/webhooks/notion",
+        callbackUrl: `${origin}/api/webhooks/notion`,
+        configured: Boolean(webhookToken),
+        tokenMasked: env.masked.NOTION_WEBHOOK_TOKEN || "",
+        publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+        subscribe: [
+          "file_upload.completed",
+          "file_upload.upload_failed",
+          "file_upload.expired",
+          "page.created",
+          "page.deleted",
+          "page.undeleted",
+          "page.properties_updated",
+        ],
       },
     });
   });
@@ -68,6 +85,10 @@ export async function PUT(req: NextRequest) {
     }
     if (typeof body.siteIcon === "string") {
       patch.siteIcon = body.siteIcon;
+    }
+    if (typeof body.resourceAccess === "string") {
+      const v = body.resourceAccess.trim().toLowerCase();
+      patch.resourceAccess = v === "proxy" ? "proxy" : "redirect";
     }
 
     // change username/password
@@ -120,11 +141,13 @@ export async function PUT(req: NextRequest) {
     }
 
     const origin = publicOrigin(req);
+    const envOut = readEnvConfig();
+    const webhookToken = (getRuntimeEnv("NOTION_WEBHOOK_TOKEN") || "").trim();
     return NextResponse.json({
       ok: true,
       app: publicAppConfig(next),
       account: { username: next.username },
-      env: readEnvConfig().masked,
+      env: envOut.masked,
       envSaved,
       index,
       webdav: {
@@ -134,6 +157,22 @@ export async function PUT(req: NextRequest) {
         username: next.username,
         proxyDownload: webdavProxyEnabled(),
         publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+      },
+      webhook: {
+        endpointPath: "/api/webhooks/notion",
+        callbackUrl: `${origin}/api/webhooks/notion`,
+        configured: Boolean(webhookToken),
+        tokenMasked: envOut.masked.NOTION_WEBHOOK_TOKEN || "",
+        publicUrl: getRuntimeEnv("PUBLIC_URL") || "",
+        subscribe: [
+          "file_upload.completed",
+          "file_upload.upload_failed",
+          "file_upload.expired",
+          "page.created",
+          "page.deleted",
+          "page.undeleted",
+          "page.properties_updated",
+        ],
       },
     });
   });

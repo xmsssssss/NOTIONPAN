@@ -10,6 +10,7 @@ import type { PlayMode } from "./MediaPlayer";
 import { AudioMiniBar } from "./AudioMiniBar";
 import { PreviewModal } from "./PreviewModal";
 import { SiteIcon } from "./SiteIcon";
+import { ThemeChibi } from "./ThemeToggle";
 import { ThumbImage } from "./ThumbImage";
 import {
   IconClose,
@@ -1263,7 +1264,6 @@ export function DriveApp({
             : " 可在后台「索引同步」修复 Schema，或确认 Integration 已连接该数据库。"}
         </div>
       )}
-
       <div className="mb-2 flex shrink-0 flex-col gap-2 sm:mb-4 sm:flex-row sm:items-center sm:gap-3">
         <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[15px] sm:text-base [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {crumbs.map((c, i) => (
@@ -1400,11 +1400,11 @@ export function DriveApp({
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         onContextMenu={(e) => openContext(e, { type: "blank" })}
-        className={`glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-[var(--border)] ${
+        className={`glass-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-[var(--border)] ${
           dragOver ? "ring-2 ring-[var(--accent)] ring-offset-2" : ""
         }`}
       >
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+<div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
         {/* 手机无表格表头：粘性排序栏 */}
         {!loading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
           <div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/95 px-2 py-1 text-[11px] text-slate-500 backdrop-blur-sm sm:hidden">
@@ -1838,9 +1838,13 @@ export function DriveApp({
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={() => setFabOpen((v) => !v)}
+        <div className="flex items-center gap-1.5">
+          <div className="pointer-events-auto shrink-0">
+            <ThemeChibi />
+          </div>
+          <button
+            type="button"
+            onClick={() => setFabOpen((v) => !v)}
           className={`flex h-12 w-12 items-center justify-center rounded-full text-white shadow-xl transition-all ${
             fabOpen
               ? "bg-slate-700 shadow-slate-400/40"
@@ -1850,7 +1854,8 @@ export function DriveApp({
           aria-expanded={fabOpen}
         >
           {fabOpen ? <IconClose className="h-5 w-5" /> : <IconMenu className="h-6 w-6" />}
-        </button>
+          </button>
+        </div>
       </div>
 
       {/* 上传任务列表 */}

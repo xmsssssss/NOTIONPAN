@@ -4,6 +4,12 @@ import { useState } from "react";
 import { FileIcon } from "./FileIcon";
 import type { FileKind } from "@/lib/types";
 
+function canShowThumb(kind: FileKind, name: string): boolean {
+  if (kind === "image" || kind === "pdf") return true;
+  // svg 等可能标成 file
+  return /\.(png|jpe?g|gif|webp|bmp|avif|heic|tiff?|svg|ico|pdf)$/i.test(name);
+}
+
 export function ThumbImage({
   id,
   kind,
@@ -17,11 +23,13 @@ export function ThumbImage({
 }) {
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const isImage = kind === "image";
+  const tryThumb = canShowThumb(kind, name);
 
-  if (!isImage || failed) {
+  if (!tryThumb || failed) {
     return (
-      <div className={`flex items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 ${className}`}>
+      <div
+        className={`flex items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 ${className}`}
+      >
         <FileIcon kind={kind} name={name} className="h-10 w-10 opacity-70" />
       </div>
     );
