@@ -60,8 +60,8 @@ flowchart LR
     - 备份、恢复（SQLite、JSON）
 - 其他
     - Notion Webhook 通知、网站自定义配置 …
-- ~~WEBDAV~~
-    - ~~作为中转站、实现被挂载（openlist、alist）~~
+- WEBDAV
+    - 作为中转站、实现被挂载（openlist、alist）
 
 ---
 
@@ -233,6 +233,16 @@ data/            # 运行时数据（已 gitignore）
 Dockerfile
 docker-compose.yml
 .env.example
+```
+
+---
+
+## WEBDAV
+
+```
+地址：https://host/webdav/ OR http://ip:port/webdav/
+账号：同管理员
+密码：同管理员
 ```
 
 ---
