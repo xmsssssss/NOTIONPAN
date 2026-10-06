@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { readAppConfig } from "@/lib/app-config";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
+import { Toaster } from "@/components/Toaster";
 
 const cfg = (() => {
   try {
@@ -47,6 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="h-full overflow-hidden antialiased">
         {children}
+        <Toaster />
       </body>
     </html>
   );

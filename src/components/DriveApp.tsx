@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DriveFile, ListFilesResult } from "@/lib/types";
 import { formatBytes, formatDate, joinFolder, kindLabel, parentFolder, sanitizeFolder } from "@/lib/utils";
 import { useUrlState } from "@/lib/use-url-state";
+import { errorMessage, toast } from "@/lib/toast";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { BtnGhost, BtnPrimary, Dialog, DialogInput } from "./Dialog";
 import { FileIcon } from "./FileIcon";
@@ -913,11 +914,19 @@ export function DriveApp({
       if (!res.ok) throw new Error(data.error || "创建分享失败");
       setShareUrl(data.url);
       setShareList((prev) => [data.share, ...prev]);
+      toast.success("分享链接已生成");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "创建分享失败");
+      toast.error(errorMessage(e, "创建分享失败"));
     } finally {
       setDialogBusy(false);
     }
+  };
+
+  const copyWithToast = async (text: string) => {
+    const { copyTextToClipboard } = await import("@/lib/client-file");
+    const ok = await copyTextToClipboard(text);
+    if (ok) toast.success("已复制到剪贴板");
+    else toast.error("复制失败，请手动选择链接复制");
   };
 
   const revokeShare = async (token: string) => {
@@ -928,8 +937,9 @@ export function DriveApp({
       if (!res.ok) throw new Error(data.error || "撤销失败");
       setShareList((prev) => prev.filter((s) => s.token !== token));
       if (shareUrl?.includes(token)) setShareUrl(null);
+      toast.success("分享已撤销");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "撤销失败");
+      toast.error(errorMessage(e, "撤销失败"));
     }
   };
 
@@ -970,8 +980,9 @@ export function DriveApp({
         });
       }
       setDeleteDialog(null);
+      toast.success("已删除");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "删除失败");
+      toast.error(errorMessage(e, "删除失败"));
     } finally {
       setDialogBusy(false);
     }
@@ -997,8 +1008,9 @@ export function DriveApp({
       setFiles((prev) => prev.map((f) => (f.id === renameDialog.id ? data.file : f)));
       if (preview?.id === renameDialog.id) setPreview(data.file);
       setRenameDialog(null);
+      toast.success("已重命名");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "重命名失败");
+      toast.error(errorMessage(e, "重命名失败"));
     } finally {
       setDialogBusy(false);
     }
@@ -1027,9 +1039,10 @@ export function DriveApp({
         setFiles((prev) => prev.map((f) => (f.id === moveDialog.id ? data.file : f)));
       }
       setMoveDialog(null);
+      toast.success(`已移动到 ${sanitizeFolder(data.file.folder)}`);
       await loadFiles();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "移动失败");
+      toast.error(errorMessage(e, "移动失败"));
     } finally {
       setDialogBusy(false);
     }
@@ -1055,9 +1068,10 @@ export function DriveApp({
       );
       setFolderDialog(false);
       setFolderName("");
+      toast.success(`已创建文件夹「${base}」`);
       await loadFiles();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "创建文件夹失败");
+      toast.error(errorMessage(e, "创建文件夹失败"));
     } finally {
       setDialogBusy(false);
     }
@@ -2502,11 +2516,7 @@ export function DriveApp({
                 <button
                   type="button"
                   className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200"
-                  onClick={() => {
-                    void import("@/lib/client-file").then(({ copyTextToClipboard }) =>
-                      copyTextToClipboard(shareUrl),
-                    );
-                  }}
+                  onClick={() => void copyWithToast(shareUrl)}
                 >
                   复制
                 </button>
@@ -2539,9 +2549,7 @@ export function DriveApp({
                         className="rounded-md bg-white px-2 py-1 text-sky-600 ring-1 ring-slate-200"
                         onClick={() => {
                           const url = `${window.location.origin}/s/${s.token}`;
-                          void import("@/lib/client-file").then(({ copyTextToClipboard }) =>
-                            copyTextToClipboard(url),
-                          );
+                          void copyWithToast(url);
                           setShareUrl(url);
                         }}
                       >
