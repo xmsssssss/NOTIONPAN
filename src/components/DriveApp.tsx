@@ -21,6 +21,7 @@ import { FileIcon } from "./FileIcon";
 import type { PlayMode } from "./MediaPlayer";
 import { AudioMiniBar } from "./AudioMiniBar";
 import { PreviewModal } from "./PreviewModal";
+import { ShareDialog } from "./ShareDialog";
 import { SiteIcon } from "./SiteIcon";
 import { ThemeChibi } from "./ThemeToggle";
 import { ThumbImage } from "./ThumbImage";
@@ -216,12 +217,6 @@ export function DriveApp({
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<DriveFile | null>(null);
   const [shareDialog, setShareDialog] = useState<DriveFile | null>(null);
-  const [sharePassword, setSharePassword] = useState("");
-  const [shareExpire, setShareExpire] = useState<string>("0");
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [shareList, setShareList] = useState<
-    Array<{ token: string; expiresAt: string | null; hasPassword: boolean; accessCount: number }>
-  >([]);
   const [viewMode, setViewMode] = useState<"list" | "gallery">("list");
   const [viewReady, setViewReady] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("createdTime");
@@ -825,70 +820,7 @@ export function DriveApp({
     setDeleteDialog(file);
   };
 
-  const openShare = async (file: DriveFile) => {
-    setShareDialog(file);
-    setSharePassword("");
-    setShareExpire("0");
-    setShareUrl(null);
-    setDialogBusy(false);
-    try {
-      const res = await fetch(`/api/share?fileId=${encodeURIComponent(file.id)}`);
-      const data = await res.json();
-      if (res.ok) setShareList(data.shares || []);
-      else setShareList([]);
-    } catch {
-      setShareList([]);
-    }
-  };
-
-  const submitShare = async () => {
-    if (!shareDialog) return;
-    setDialogBusy(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/share", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileId: shareDialog.id,
-          password: sharePassword || undefined,
-          expiresInHours: shareExpire === "0" ? null : Number(shareExpire),
-          allowDownload: true,
-          allowPreview: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "创建分享失败");
-      setShareUrl(data.url);
-      setShareList((prev) => [data.share, ...prev]);
-      toast.success("分享链接已生成");
-    } catch (e) {
-      toast.error(errorMessage(e, "创建分享失败"));
-    } finally {
-      setDialogBusy(false);
-    }
-  };
-
-  const copyWithToast = async (text: string) => {
-    const { copyTextToClipboard } = await import("@/lib/client-file");
-    const ok = await copyTextToClipboard(text);
-    if (ok) toast.success("已复制到剪贴板");
-    else toast.error("复制失败，请手动选择链接复制");
-  };
-
-  const revokeShare = async (token: string) => {
-    if (!confirm("确定撤销该分享链接？")) return;
-    try {
-      const res = await fetch(`/api/share/${token}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "撤销失败");
-      setShareList((prev) => prev.filter((s) => s.token !== token));
-      if (shareUrl?.includes(token)) setShareUrl(null);
-      toast.success("分享已撤销");
-    } catch (e) {
-      toast.error(errorMessage(e, "撤销失败"));
-    }
-  };
+  const openShare = (file: DriveFile) => setShareDialog(file);
 
   const stopAudioSession = useCallback(() => {
     const el = audioElRef.current;
@@ -1176,7 +1108,7 @@ export function DriveApp({
         openFileDownload(target.file);
       });
     }
-    if (id === "share") void openShare(target.file);
+    if (id === "share") openShare(target.file);
     if (id === "rename") openRename(target.file);
     if (id === "move") openMove(target.file);
     if (id === "delete") openDelete(target.file);
@@ -2418,105 +2350,7 @@ export function DriveApp({
         }
       />
 
-      <Dialog
-        open={Boolean(shareDialog)}
-        title="分享文件"
-        description={shareDialog ? `「${shareDialog.name}」` : undefined}
-        onClose={() => !dialogBusy && setShareDialog(null)}
-        wide
-        footer={
-          <>
-            <BtnGhost onClick={() => setShareDialog(null)}>关闭</BtnGhost>
-            <BtnPrimary onClick={() => void submitShare()} disabled={dialogBusy}>
-              {dialogBusy ? "生成中…" : "生成链接"}
-            </BtnPrimary>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <DialogInput
-            label="访问密码（可选）"
-            value={sharePassword}
-            onChange={setSharePassword}
-            placeholder="留空则任何人可打开"
-          />
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium text-slate-700">有效期</span>
-            <select
-              value={shareExpire}
-              onChange={(e) => setShareExpire(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-            >
-              <option value="0">永久有效</option>
-              <option value="1">1 小时</option>
-              <option value="24">1 天</option>
-              <option value="168">7 天</option>
-              <option value="720">30 天</option>
-            </select>
-          </label>
-
-          {shareUrl && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-              <div className="mb-1 text-xs font-medium text-emerald-800">分享链接已生成</div>
-              <div className="flex flex-wrap items-center gap-2">
-                <code className="min-w-0 flex-1 break-all text-xs text-emerald-900">{shareUrl}</code>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200"
-                  onClick={() => void copyWithToast(shareUrl)}
-                >
-                  复制
-                </button>
-              </div>
-            </div>
-          )}
-
-          {shareList.length > 0 && (
-            <div>
-              <div className="mb-2 text-sm font-medium text-slate-700">已有分享</div>
-              <div className="max-h-40 space-y-2 overflow-auto">
-                {shareList.map((s) => (
-                  <div
-                    key={s.token}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-mono text-slate-600">/s/{s.token.slice(0, 10)}…</div>
-                      <div className="text-slate-400">
-                        {s.hasPassword ? "有密码 · " : ""}
-                        {s.expiresAt
-                          ? `过期 ${new Date(s.expiresAt).toLocaleString("zh-CN")}`
-                          : "永久"}
-                        {` · 访问 ${s.accessCount ?? 0} 次`}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 gap-1">
-                      <button
-                        type="button"
-                        className="rounded-md bg-white px-2 py-1 text-sky-600 ring-1 ring-slate-200"
-                        onClick={() => {
-                          const url = `${window.location.origin}/s/${s.token}`;
-                          void copyWithToast(url);
-                          setShareUrl(url);
-                        }}
-                      >
-                        复制
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md bg-white px-2 py-1 text-red-600 ring-1 ring-slate-200"
-                        onClick={() => void revokeShare(s.token)}
-                      >
-                        撤销
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </Dialog>
+      <ShareDialog key={shareDialog?.id ?? "none"} file={shareDialog} onClose={() => setShareDialog(null)} />
     </div>
   );
 }
