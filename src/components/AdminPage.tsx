@@ -112,7 +112,6 @@ export function AdminPage({
   onLogout: () => void;
 }) {
   const [tab, setTab] = useState<TabId>("site");
-  const [mobileNav, setMobileNav] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -630,7 +629,6 @@ export function AdminPage({
                   type="button"
                   onClick={() => {
                     setTab(item.id);
-                    setMobileNav(false);
                     setMsg(null);
                     setErr(null);
                   }}
@@ -645,36 +643,6 @@ export function AdminPage({
               ))}
             </div>
           </div>
-
-          {/* Mobile expanded nav (hamburger) */}
-          {mobileNav && (
-            <div className="border-b border-slate-200 bg-white px-3 py-3 md:hidden">
-              <div className="grid grid-cols-1 gap-1.5">
-                {TABS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setTab(item.id);
-                      setMobileNav(false);
-                      setMsg(null);
-                      setErr(null);
-                    }}
-                    className={`flex items-center gap-3 rounded-xl px-3 py-3 text-left text-sm ${
-                      tab === item.id
-                        ? "bg-sky-50 font-medium text-sky-700 ring-1 ring-sky-200"
-                        : "text-slate-600 active:bg-slate-50"
-                    }`}
-                  >
-                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
-                      {item.icon}
-                    </span>
-                    <span>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           <main className="flex-1 px-3 py-4 sm:px-6 sm:py-5">
             {(msg || err) && (
