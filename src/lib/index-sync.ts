@@ -1,4 +1,5 @@
-import type { Client } from "@notionhq/client";
+import { iterateAllDataSourceRows, type Client } from "@notionhq/client";
+import { getDataSourceId, withNotionRetry } from "./notion";
 import {
   abortIndexFullSync,
   beginIndexFullSync,
@@ -69,6 +70,14 @@ export function isFolderMarkerFile(file: DriveFile): boolean {
   return file.name === FOLDER_MARKER || file.mimeType === FOLDER_MIME;
 }
 
+/** 兜底分页（无 data source 时）的页数上限；超出则报错而不是静默截断 */
+const FALLBACK_MAX_PAGES = 100;
+
+/**
+ * 拉取数据库全部页面。
+ * 官方限制：单次查询最多返回 10,000 条（超出时 request_status.type === "incomplete"）。
+ * 有 data source 时使用 SDK 的 iterateAllDataSourceRows，按 created_time 分窗口突破上限。
+ */
 export async function queryAllNotionPages(
   notion: Client,
   queryPages: (
@@ -78,16 +87,37 @@ export async function queryAllNotionPages(
     pageSize?: number,
   ) => Promise<{ results: PageLike[]; has_more: boolean; next_cursor: string | null }>,
 ): Promise<PageLike[]> {
+  const dataSourceId = await getDataSourceId(notion);
+  if (dataSourceId) {
+    // helper 只调用 client.dataSources.query；包一层让每次请求仍享受网络层重试
+    const retrying = {
+      dataSources: {
+        query: (args: Parameters<Client["dataSources"]["query"]>[0]) =>
+          withNotionRetry(() => notion.dataSources.query(args), "查询数据库"),
+      },
+    } as unknown as Client;
+    const all: PageLike[] = [];
+    for await (const row of iterateAllDataSourceRows(retrying, {
+      data_source_id: dataSourceId,
+      page_size: 100,
+    })) {
+      all.push(row as unknown as PageLike);
+    }
+    return all;
+  }
+
   const all: PageLike[] = [];
   let cursor: string | null = null;
-  // 上限约 2 万条（200 页 × 100）；再大需分页策略改造
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < FALLBACK_MAX_PAGES; i++) {
     const res = await queryPages(notion, null, cursor, 100);
     all.push(...(res.results as PageLike[]));
-    if (!res.has_more || !res.next_cursor) break;
+    if (!res.has_more || !res.next_cursor) return all;
     cursor = res.next_cursor;
   }
-  return all;
+  // 宁可同步失败（保留旧索引），也不用被截断的结果覆盖索引
+  throw new Error(
+    `数据库超过 ${FALLBACK_MAX_PAGES * 100} 条，且无法使用 data source 分窗口查询，已中止同步。请设置 NOTION_DATA_SOURCE_ID。`,
+  );
 }
 
 export async function fullSyncFromNotion(

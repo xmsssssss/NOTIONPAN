@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
 import { getSyncStatus, syncIndex } from "@/lib/drive";
 
@@ -11,10 +11,9 @@ export async function GET() {
   });
 }
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   return withAuth(async () => {
-    const force = req.nextUrl.searchParams.get("force") !== "0";
-    const result = await syncIndex(force);
+    const result = await syncIndex();
     return NextResponse.json({ ok: true, ...result });
   });
 }

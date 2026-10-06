@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import sharp from "sharp";
 import { getFile } from "./drive";
+import { isCadFile } from "./utils";
 
 function dataDir() {
   const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
@@ -26,6 +27,7 @@ export function thumbPath(id: string) {
 }
 
 export function isImageFile(mimeType: string, name: string): boolean {
+  if (isCadFile(mimeType, name)) return false;
   if (mimeType.startsWith("image/")) return true;
   return /\.(png|jpe?g|gif|webp|bmp|avif|heic|tiff?|svg|ico)$/i.test(name);
 }

@@ -123,8 +123,16 @@ export function DriveApp({
     playMode: PlayMode;
   } | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
+  // 供渲染期传给子组件：ref 变化不触发重渲染，所以同步一份到 state
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const setAudioNode = useCallback((node: HTMLAudioElement | null) => {
+    audioElRef.current = node;
+    setAudioEl(node);
+  }, []);
   const audioSessionRef = useRef(audioSession);
-  audioSessionRef.current = audioSession;
+  useEffect(() => {
+    audioSessionRef.current = audioSession;
+  }, [audioSession]);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
 
@@ -215,7 +223,7 @@ export function DriveApp({
   const [fabOpen, setFabOpen] = useState(false);
   const fabRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
   // 音频迷你条：同步 <audio> 播放状态
   useEffect(() => {
     const el = audioElRef.current;
@@ -1749,6 +1757,8 @@ export function DriveApp({
           <div
             className="fab-menu-list mb-1 flex max-h-[min(70dvh,28rem)] flex-col items-end gap-2 overflow-y-auto overscroll-contain py-1 pr-0.5"
           >
+            {/* The ref is only dereferenced by the upload click handler; the rule follows it through this action list. */}
+            {/* eslint-disable-next-line react-hooks/refs */}
             {[
               {
                 id: "new-folder",
@@ -1766,7 +1776,7 @@ export function DriveApp({
                 id: "upload",
                 label: uploading ? `上传中 ${uploadPct}%` : "上传文件",
                 icon: <IconUpload className="h-4 w-4" />,
-                onClick: () => fileInputRef.current?.click(),
+                onClick: openFilePicker,
                 disabled: uploading,
                 primary: true,
               },
@@ -2075,7 +2085,7 @@ export function DriveApp({
 
       {/* 常驻 audio：最小化/展开共用，避免重挂载导致暂停与状态丢失 */}
       <audio
-        ref={audioElRef}
+        ref={setAudioNode}
         className="hidden"
         onPlay={() => setAudioPlaying(true)}
         onPause={() => setAudioPlaying(false)}
@@ -2126,7 +2136,7 @@ export function DriveApp({
           }
           autoPlay={preview.kind === "audio" ? false : autoPlay}
           externalAudio={preview.kind === "audio"}
-          externalAudioEl={preview.kind === "audio" ? audioElRef.current : null}
+          externalAudioEl={preview.kind === "audio" ? audioEl : null}
           playMode={preview.kind === "audio" ? audioSession?.playMode : undefined}
           onPlayModeChange={
             preview.kind === "audio"

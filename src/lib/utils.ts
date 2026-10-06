@@ -8,15 +8,33 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** 是否为可重试的网络抖动（ECONNRESET 等） */
-export function isRetriableNetworkError(err: unknown): boolean {
-  const e = err as Error & { cause?: { code?: string; message?: string; errno?: string } };
+function errorDetail(err: unknown): string {
+  const e = err as Error & {
+    code?: string;
+    cause?: { code?: string; message?: string; errno?: string };
+  };
   const msg = e?.message || String(err);
   const cause = e?.cause;
-  const detail = [msg, cause?.message, cause?.code, cause?.errno].filter(Boolean).join(" · ");
-  return /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EPIPE|EAI_AGAIN|UND_ERR|socket hang up|network|certificate|SSL|TLS|aborted|timeout/i.test(
-    detail,
+  return [msg, e?.code, cause?.message, cause?.code, cause?.errno].filter(Boolean).join(" · ");
+}
+
+/**
+ * 是否为可重试的网络抖动（ECONNRESET / 超时等）。
+ * 注意：超时、连接中断时请求可能已被 Notion 处理，仅适用于幂等请求。
+ * 证书 / TLS 错误重试不会成功，因此不在此列。
+ */
+export function isRetriableNetworkError(err: unknown): boolean {
+  return /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EPIPE|EAI_AGAIN|UND_ERR|socket hang up|network|aborted|timeout|timed out/i.test(
+    errorDetail(err),
   );
+}
+
+/**
+ * 请求在发出前就失败（DNS / 拒绝连接），Notion 一定没有收到请求，
+ * 对非幂等写入（创建页面等）也可以安全重试。
+ */
+export function isConnectFailure(err: unknown): boolean {
+  return /ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(errorDetail(err));
 }
 
 /** 把 Node/undici 的「fetch failed」等网络错误转成可读中文 */
@@ -27,7 +45,8 @@ export function formatNetworkError(err: unknown, action = "请求"): string {
   const code = cause?.code || cause?.errno || "";
   const detail = [msg, cause?.message, code].filter(Boolean).join(" · ");
 
-  if (isRetriableNetworkError(err)) {
+  const isApiError = typeof (err as { status?: unknown })?.status === "number";
+  if (!isApiError && isRetriableNetworkError(err)) {
     return `${action}失败：连接 Notion 不稳定（${code || "ECONNRESET/网络中断"}）。已自动重试仍失败，请稍后再试；若频繁出现，请检查代理或网络到 api.notion.com。`;
   }
   // Notion API 业务错误原文常含 validation_error 等
@@ -64,8 +83,14 @@ export function formatDate(iso: string): string {
   }
 }
 
+/** CAD 格式的 MIME 以 image/ 开头（image/vnd.dwg 等），但 Notion 只能作为 file 块挂载 */
+export function isCadFile(mimeType: string, filename: string): boolean {
+  return /^image\/vnd\.(dwg|dxf)$/i.test(mimeType) || /\.(dwg|dxf)$/i.test(filename);
+}
+
 export function detectKind(mimeType: string, filename: string): FileKind {
   const lower = filename.toLowerCase();
+  if (isCadFile(mimeType, lower)) return "file";
   if (mimeType.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|heic|tiff?)$/i.test(lower)) {
     return "image";
   }

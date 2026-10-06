@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { DriveFile, FileKind } from "./types";
-import { bareNotionId, normalizeNotionId, sameNotionId } from "./utils";
+import { bareNotionId, normalizeNotionId } from "./utils";
 
 /**
  * 本地文件索引

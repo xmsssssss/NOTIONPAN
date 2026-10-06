@@ -27,7 +27,6 @@ import {
 } from "./utils";
 
 const DAV_NS = "DAV:";
-const FOLDER_MARKER = ".folder";
 
 /** 对外挂载路径（客户端仍用 /webdav；内部实现在 /api/webdav） */
 export function webDavBasePath(): string {
@@ -105,16 +104,6 @@ function propstatOk(inner: string): string {
 ${inner}
   </D:prop>
   <D:status>HTTP/1.1 200 OK</D:status>
-</D:propstat>`;
-}
-
-function propstat404(names: string[]): string {
-  if (!names.length) return "";
-  return `<D:propstat>
-  <D:prop>
-${names.map((n) => `    <D:${n}/>`).join("\n")}
-  </D:prop>
-  <D:status>HTTP/1.1 404 Not Found</D:status>
 </D:propstat>`;
 }
 

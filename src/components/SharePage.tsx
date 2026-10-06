@@ -53,6 +53,8 @@ export function SharePage({ token }: { token: string }) {
 
   useEffect(() => {
     void load();
+    // load 每次渲染重建，只需在 token 变化时重新加载
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   useEffect(() => {

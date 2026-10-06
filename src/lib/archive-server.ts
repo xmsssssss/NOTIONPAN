@@ -45,7 +45,6 @@ async function loadLibArchive(): Promise<LibArchiveModule> {
       const entry = pathToFileURL(path.join(dist, "libarchive-node.mjs")).href;
       const mod = (await import(/* webpackIgnore: true */ entry)) as LibArchiveModule;
       const workerPath = path.join(dist, "worker-bundle-node.mjs");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const nodeEndpoint = require("comlink/dist/esm/node-adapter.js").default as (
         w: Worker,
       ) => unknown;

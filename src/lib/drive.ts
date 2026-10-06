@@ -1,5 +1,8 @@
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
+import type { ReadableStream as NodeReadableStream } from "stream/web";
 import mime from "mime-types";
 import type { Client } from "@notionhq/client";
 import {
@@ -24,6 +27,7 @@ import {
   getNotionClient,
   getWorkspaceUploadLimit,
   richText,
+  trashPage,
   withNotionRetry,
 } from "./notion";
 import {
@@ -44,8 +48,10 @@ import {
   sameNotionId,
 } from "./utils";
 
-const PART_SIZE = 10 * 1024 * 1024; // 10 MiB
+const PART_SIZE = 10 * 1024 * 1024; // 10 MiB（官方建议，5–20 MiB 之间）
 const SINGLE_PART_LIMIT = 20 * 1024 * 1024; // 20 MiB
+/** 分片并发数：峰值内存约 PART_SIZE × 并发 */
+const PART_CONCURRENCY = 3;
 
 type PageLike = {
   id: string;
@@ -123,42 +129,32 @@ async function queryPages(
   pageSize = 50,
 ): Promise<{ results: PageLike[]; has_more: boolean; next_cursor: string | null }> {
   const dataSourceId = await getDataSourceId(notion);
-
-  if (dataSourceId && "dataSources" in notion && notion.dataSources) {
-    return withNotionRetry(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      () =>
-        (notion as any).dataSources.query({
-          data_source_id: dataSourceId,
-          filter: filter || undefined,
-          start_cursor: startCursor || undefined,
-          page_size: pageSize,
-          sorts: [{ timestamp: "created_time", direction: "descending" }],
-        }),
-      "查询数据库",
-    );
+  if (!dataSourceId) {
+    // API 2025-09-03 起查询走 data source；databases.query 已不存在
+    throw new Error("无法查询数据库：请设置 NOTION_DATA_SOURCE_ID，或确认集成已被添加到该数据库");
   }
 
-  // Fallback: some SDK versions still expose databases.query
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof (notion.databases as any).query === "function") {
-    return withNotionRetry(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      () =>
-        (notion.databases as any).query({
-          database_id: getDatabaseId(),
-          filter: filter || undefined,
-          start_cursor: startCursor || undefined,
-          page_size: pageSize,
-          sorts: [{ timestamp: "created_time", direction: "descending" }],
-        }),
-      "查询数据库",
-    );
-  }
-
-  throw new Error(
-    "无法查询数据库：请设置 NOTION_DATA_SOURCE_ID，或确认 SDK/API 版本支持 dataSources.query",
+  const res = await withNotionRetry(
+    () =>
+      notion.dataSources.query({
+        data_source_id: dataSourceId,
+        filter: (filter || undefined) as Parameters<
+          Client["dataSources"]["query"]
+        >[0]["filter"],
+        start_cursor: startCursor || undefined,
+        page_size: pageSize,
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+      }),
+    "查询数据库",
   );
+  if (res.request_status?.type === "incomplete") {
+    console.warn("[notion] 查询结果达到官方 10,000 条上限，返回不完整：", res.request_status);
+  }
+  return res as unknown as {
+    results: PageLike[];
+    has_more: boolean;
+    next_cursor: string | null;
+  };
 }
 
 const FOLDER_MARKER = ".folder";
@@ -218,7 +214,8 @@ export async function listFiles(options: {
   }
 }
 
-export async function syncIndex(force = true) {
+/** 始终全量同步（历史上的 force 参数从未生效，已移除） */
+export async function syncIndex() {
   const notion = getNotionClient();
   const res = await fullSyncFromNotion(notion, queryPages);
   return { ...res, meta: getIndexSyncMeta() };
@@ -241,9 +238,9 @@ export async function syncPageToIndex(pageId: string): Promise<"upserted" | "del
       () => notion.pages.retrieve({ page_id: pageIdNorm || pageId }),
       "读取页面",
       2,
-    )) as unknown as PageLike & { archived?: boolean; in_trash?: boolean; parent?: { type?: string; database_id?: string; data_source_id?: string } };
+    )) as unknown as PageLike & { in_trash?: boolean; parent?: { type?: string; database_id?: string; data_source_id?: string } };
 
-    if (page.in_trash || page.archived) {
+    if (page.in_trash) {
       deleteIndexRow(page.id || pageIdNorm);
       return "deleted";
     }
@@ -292,64 +289,6 @@ export async function removePageFromIndex(pageId: string) {
   deleteIndexRow(pageId);
 }
 
-async function queryAllPages(
-  notion: Client,
-  filter: Record<string, unknown> | null,
-  maxPages = 20,
-): Promise<PageLike[]> {
-  const all: PageLike[] = [];
-  let cursor: string | null = null;
-  for (let i = 0; i < maxPages; i++) {
-    const res = await queryPages(notion, filter, cursor, 100);
-    all.push(...(res.results as PageLike[]));
-    if (!res.has_more || !res.next_cursor) break;
-    cursor = res.next_cursor;
-  }
-  return all;
-}
-
-async function listSubfolders(notion: Client, folder: string): Promise<string[]> {
-  const set = new Set<string>();
-  const prefix = folder === "/" ? "/" : `${folder}/`;
-
-  // 1) 占位文件夹：Folder 等于 当前路径/子名
-  // 2) 真实文件：Folder 以 当前路径/ 开头
-  // 用 starts_with 尽量缩小范围；根目录则拉全量再解析
-  let pages: PageLike[];
-  if (folder === "/") {
-    pages = await queryAllPages(notion, null);
-  } else {
-    pages = await queryAllPages(notion, {
-      property: "Folder",
-      rich_text: { starts_with: prefix },
-    });
-    // 也包含 Folder 恰好等于某个直接子路径的情况已由 starts_with 覆盖
-    // 额外：占位符 Folder 可能是 /parent/child 本身（不是 starts_with 再深一层）
-    // starts_with `/docs/` 不会匹配 `/docs/child` 的... wait `/docs/child`.starts_with(`/docs/`) is true
-    // For marker at `/docs/photos`, Folder=`/docs/photos`, starts_with `/docs/` → true ✓
-  }
-
-  for (const page of pages) {
-    const f = sanitizeFolder(propRichText(page, "Folder") || "/");
-    if (folder === "/") {
-      if (f !== "/" && f.startsWith("/")) {
-        const first = f.split("/").filter(Boolean)[0];
-        if (first) set.add(first);
-      }
-    } else if (f === folder) {
-      // 当前目录自身的文件/占位，不是子文件夹
-      continue;
-    } else if (f.startsWith(prefix)) {
-      const rest = f.slice(prefix.length);
-      const first = rest.split("/").filter(Boolean)[0];
-      if (first) set.add(first);
-    }
-  }
-
-  // 根目录时也要发现 Folder=`/name` 的占位（上面逻辑已覆盖）
-  return Array.from(set).sort((a, b) => a.localeCompare(b, "zh-CN"));
-}
-
 /** 列出所有已知文件夹路径（含根目录 `/`） */
 export async function listAllFolders(): Promise<string[]> {
   const notion = getNotionClient();
@@ -374,6 +313,8 @@ async function createPage(
           ...(children ? { children: children as any } : {}),
         }),
       "创建页面",
+      2,
+      { idempotent: false },
     )) as unknown as PageLike;
   }
   return (await withNotionRetry(
@@ -386,6 +327,8 @@ async function createPage(
         ...(children ? { children: children as any } : {}),
       }),
     "创建页面",
+    2,
+    { idempotent: false },
   )) as unknown as PageLike;
 }
 
@@ -424,13 +367,14 @@ async function appendMediaPreview(
   try {
     await withNotionRetry(
       () =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (notion.blocks.children.append as any)({
+        notion.blocks.children.append({
           block_id: pageId,
-          children: [mediaBlockChild(kind, fileUploadId, caption)],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          children: [mediaBlockChild(kind, fileUploadId, caption)] as any,
         }),
       "添加预览块",
       2,
+      { idempotent: false },
     );
   } catch {
     // 类型不匹配或权限等：正文无预览不影响 File 属性
@@ -580,6 +524,22 @@ const NOTION_EXT_MIME: Array<{ re: RegExp; ext: string; mime: string }> = [
   { re: /\.ppt$/i, ext: "ppt", mime: "application/vnd.ms-powerpoint" },
   { re: /\.rtf$/i, ext: "rtf", mime: "application/rtf" },
   { re: /\.epub$/i, ext: "epub", mime: "application/epub+zip" },
+  // CAD / 3D（官方 2026-09-22 起支持，作为 file 块挂载）
+  { re: /\.dwg$/i, ext: "dwg", mime: "image/vnd.dwg" },
+  { re: /\.dxf$/i, ext: "dxf", mime: "image/vnd.dxf" },
+  { re: /\.dwf$/i, ext: "dwf", mime: "model/vnd.dwf" },
+  { re: /\.(rvt|rfa)$/i, ext: "rvt", mime: "application/vnd.autodesk.revit" },
+  { re: /\.fbx$/i, ext: "fbx", mime: "application/vnd.autodesk.fbx" },
+  { re: /\.3dm$/i, ext: "3dm", mime: "application/vnd.mcneel.3dm" },
+  { re: /\.(step|stp)$/i, ext: "step", mime: "model/step" },
+  { re: /\.(iges|igs)$/i, ext: "iges", mime: "model/iges" },
+  { re: /\.stl$/i, ext: "stl", mime: "model/stl" },
+  { re: /\.obj$/i, ext: "obj", mime: "model/obj" },
+  { re: /\.3mf$/i, ext: "3mf", mime: "model/3mf" },
+  { re: /\.gltf$/i, ext: "gltf", mime: "model/gltf+json" },
+  { re: /\.glb$/i, ext: "glb", mime: "model/gltf-binary" },
+  { re: /\.dae$/i, ext: "dae", mime: "model/vnd.collada+xml" },
+  { re: /\.usdz$/i, ext: "usdz", mime: "model/vnd.usdz+zip" },
   // 文本类（含字幕 .ass/.srt 等 → 当 txt 上传）
   {
     re: /\.(txt|log|ini|conf|js|ts|jsx|tsx|py|go|rs|java|c|cpp|h|sh|sql|ass|ssa|srt|vtt|lrc|sub|idx|nfo|cue|m3u|m3u8|pls)$/i,
@@ -612,7 +572,10 @@ function notionUploadIdentity(
         (row.ext === "tiff" && (origExt === "tif" || origExt === "tiff")) ||
         (row.ext === "mp4" && (origExt === "mp4" || origExt === "m4v")) ||
         (row.ext === "mpeg" && (origExt === "mpeg" || origExt === "mpg")) ||
-        (row.ext === "mid" && (origExt === "mid" || origExt === "midi"));
+        (row.ext === "mid" && (origExt === "mid" || origExt === "midi")) ||
+        (row.ext === "rvt" && origExt === "rfa") ||
+        (row.ext === "step" && origExt === "stp") ||
+        (row.ext === "iges" && origExt === "igs");
       const safeExt = useOrig ? origExt : row.ext;
       const base = originalName.replace(/\.[^./\\]+$/, "") || "file";
       // Notion 已支持的扩展直接用原名；映射类用 base.safeExt
@@ -638,8 +601,8 @@ function notionUploadIdentity(
     return { uploadName: forceExt(originalName, "txt"), contentType: "text/plain" };
   }
 
-  // 未知扩展名（.exe .iso .ass 已在上面部分覆盖）：统一当 .bin 用 zip 容器 MIME 仍可能拒扩展
-  // 用 .zip 扩展 + application/zip 最稳妥（内容仍是原字节）
+  // 未知扩展名（.exe / .iso 等，官方明确会拒绝）：当前以 .bin.txt + text/plain 上传，
+  // 原名与 MIME 保存在 Name / MIME 属性中。注意这是绕过 Notion 类型校验的变通做法。
   return {
     uploadName: forceExt(originalName, "bin.txt"),
     contentType: "text/plain",
@@ -788,37 +751,64 @@ async function uploadBinarySized(
       "创建分片上传",
     );
 
-    for (let i = 0; i < numberOfParts; i++) {
-      const start = i * PART_SIZE;
-      const end = Math.min(start + PART_SIZE, size);
-      const part = await readRange(start, end);
-      onProgress?.({
-        phase: "send",
-        ratio: 0.05 + (i / numberOfParts) * 0.83,
-        message: `发送分片 ${i + 1}/${numberOfParts}`,
-        part: i + 1,
-        parts: numberOfParts,
-      });
-      await withNotionRetry(
-        () =>
-          notion.fileUploads.send({
-            file_upload_id: created.id,
-            file: {
-              filename: uploadName,
-              data: toBlob(part, contentType),
-            },
-            part_number: String(i + 1),
-          }),
-        `发送分片 ${i + 1}/${numberOfParts}`,
-      );
-      onProgress?.({
-        phase: "send",
-        ratio: 0.05 + ((i + 1) / numberOfParts) * 0.83,
-        message: `已发送分片 ${i + 1}/${numberOfParts}`,
-        part: i + 1,
-        parts: numberOfParts,
-      });
-    }
+    // 官方：各分片可并行发送（受限速约束），顺序不限，全部发完再 complete。
+    // 并发数与 10MB 分片相乘即峰值内存；全局令牌桶会兜住请求速率。
+    let nextPart = 0;
+    let donePart = 0;
+    let aborted = false;
+    const worker = async () => {
+      try {
+        await sendParts();
+      } catch (e) {
+        // 任一分片失败：其余 worker 不再领取新分片，避免白白消耗额度
+        aborted = true;
+        throw e;
+      }
+    };
+    const sendParts = async () => {
+      for (;;) {
+        if (aborted) return;
+        const i = nextPart++;
+        if (i >= numberOfParts) return;
+        const start = i * PART_SIZE;
+        const end = Math.min(start + PART_SIZE, size);
+        const part = await readRange(start, end);
+        onProgress?.({
+          phase: "send",
+          ratio: 0.05 + (donePart / numberOfParts) * 0.83,
+          message: `发送分片 ${i + 1}/${numberOfParts}`,
+          part: i + 1,
+          parts: numberOfParts,
+        });
+        await withNotionRetry(
+          () =>
+            notion.fileUploads.send({
+              file_upload_id: created.id,
+              file: {
+                filename: uploadName,
+                data: toBlob(part, contentType),
+              },
+              part_number: String(i + 1),
+            }),
+          `发送分片 ${i + 1}/${numberOfParts}`,
+        );
+        donePart++;
+        onProgress?.({
+          phase: "send",
+          ratio: 0.05 + (donePart / numberOfParts) * 0.83,
+          message: `已发送分片 ${donePart}/${numberOfParts}`,
+          part: donePart,
+          parts: numberOfParts,
+        });
+      }
+    };
+    const results = await Promise.allSettled(
+      Array.from({ length: Math.min(PART_CONCURRENCY, numberOfParts) }, worker),
+    );
+    const failed = results.find((r) => r.status === "rejected") as
+      | PromiseRejectedResult
+      | undefined;
+    if (failed) throw failed.reason;
 
     onProgress?.({ phase: "complete", ratio: 0.9, message: "合并分片" });
     await withNotionRetry(
@@ -875,8 +865,11 @@ export async function uploadFile(input: {
       `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}.bin`,
     );
     try {
-      const buf = Buffer.from(await input.file.arrayBuffer());
-      await fs.promises.writeFile(tmpPath, buf);
+      // 流式写盘，避免再复制一整份 Buffer
+      await pipeline(
+        Readable.fromWeb(input.file.stream() as unknown as NodeReadableStream<Uint8Array>),
+        fs.createWriteStream(tmpPath),
+      );
       return await uploadFileFromPath({
         filePath: tmpPath,
         size,
@@ -963,7 +956,7 @@ export async function uploadFile(input: {
     );
   }
 
-  let pageId = page.id;
+  const pageId = page.id;
   try {
     onProgress?.({ phase: "page", ratio: 0.96, message: "添加 Notion 预览" });
     await appendMediaPreview(notion, pageId, kind, fileUploadId, displayName);
@@ -987,22 +980,9 @@ export async function uploadFile(input: {
       return { file: normalized, skipped: false };
     } catch {
       try {
-        await withNotionRetry(
-          () =>
-            notion.pages.update({
-              page_id: pageId,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ...({ in_trash: true } as any),
-            }),
-          "清理失败上传页",
-          1,
-        );
+        await trashPage(notion, pageId, "清理失败上传页", 1);
       } catch {
-        try {
-          await notion.pages.update({ page_id: pageId, archived: true });
-        } catch {
-          // ignore
-        }
+        // ignore
       }
       throw err;
     }
@@ -1114,22 +1094,9 @@ export async function uploadFileFromPath(input: {
       return { file: normalized, skipped: false };
     } catch {
       try {
-        await withNotionRetry(
-          () =>
-            notion.pages.update({
-              page_id: pageId,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ...({ in_trash: true } as any),
-            }),
-          "清理失败上传页",
-          1,
-        );
+        await trashPage(notion, pageId, "清理失败上传页", 1);
       } catch {
-        try {
-          await notion.pages.update({ page_id: pageId, archived: true });
-        } catch {
-          // ignore
-        }
+        // ignore
       }
       throw err;
     }
@@ -1250,7 +1217,7 @@ async function finalizeUploadedImport(
   let file: DriveFile;
   try {
     file = await getFile(pageId);
-  } catch (err) {
+  } catch {
     // 页已存在：构造最小记录写索引，避免孤儿页
     const fallback: DriveFile = {
       id: normalizeNotionId(pageId),
@@ -1357,7 +1324,7 @@ export async function startImportFromUrl(input: {
 
   const fileUploadId = created.id;
   const initialStatus = (created as { status?: string }).status || "pending";
-  let contentLength =
+  const contentLength =
     typeof (created as { content_length?: number }).content_length === "number"
       ? (created as { content_length: number }).content_length
       : 0;
@@ -1558,26 +1525,7 @@ async function waitImportJob(jobId: string, timeoutMs: number) {
 export async function deleteFile(pageId: string): Promise<void> {
   const notion = getNotionClient();
   const id = normalizeNotionId(pageId) || pageId;
-  try {
-    await withNotionRetry(
-      () =>
-        notion.pages.update({
-          page_id: id,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ...({ in_trash: true } as any),
-        }),
-      "删除文件",
-    );
-  } catch {
-    await withNotionRetry(
-      () =>
-        notion.pages.update({
-          page_id: id,
-          archived: true,
-        }),
-      "归档文件",
-    );
-  }
+  await trashPage(notion, id, "删除文件");
   deleteIndexRow(id);
   try {
     const { deleteThumb } = await import("./thumb");
@@ -1899,6 +1847,7 @@ export async function createDriveDatabase(input?: {
         }),
       "创建网盘数据库",
       2,
+      { idempotent: false },
     )) as typeof created;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

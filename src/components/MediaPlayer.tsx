@@ -74,7 +74,9 @@ export function MediaPlayer({
   const activeLyricRef = useRef<HTMLParagraphElement | null>(null);
   const cueCache = useRef<Map<string, Cue[]>>(new Map());
   const playModeRef = useRef(playMode);
-  playModeRef.current = playMode;
+  useEffect(() => {
+    playModeRef.current = playMode;
+  }, [playMode]);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -107,11 +109,14 @@ export function MediaPlayer({
     moved: boolean;
   } | null>(null);
   const volumeRef = useRef(volume);
-  volumeRef.current = volume;
   const brightnessRef = useRef(brightness);
-  brightnessRef.current = brightness;
   const mutedRef = useRef(muted);
-  mutedRef.current = muted;
+  // 渲染后同步最新值，供事件回调读取（手势/快捷键处理里也会即时写入）
+  useEffect(() => {
+    volumeRef.current = volume;
+    brightnessRef.current = brightness;
+    mutedRef.current = muted;
+  }, [volume, brightness, muted]);
   const [bars] = useState(() =>
     Array.from({ length: 28 }, () => 0.25 + Math.random() * 0.75),
   );
@@ -347,7 +352,9 @@ export function MediaPlayer({
   }, [clearHideControlsTimer]);
 
   const bumpControlsRef = useRef(bumpControls);
-  bumpControlsRef.current = bumpControls;
+  useEffect(() => {
+    bumpControlsRef.current = bumpControls;
+  }, [bumpControls]);
 
   /** 双击分区：左快退 / 右快进（中间不播停，用控件或空格） */
   const handleVideoDoubleAction = useCallback(

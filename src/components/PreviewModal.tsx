@@ -75,6 +75,8 @@ export function PreviewModal({
 
   useEffect(() => {
     setCurrent(initialFile);
+    // 仅在切换到不同文件时重置；依赖整个 initialFile 会因对象引用变化误触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialFile.id]);
 
   const selectFile = (next: DriveFile) => {
@@ -300,6 +302,8 @@ export function PreviewModal({
       ac?.abort();
       if (pdfTimer) clearTimeout(pdfTimer);
     };
+    // 仅按文件标识字段重载；依赖整个 file 对象会因引用变化重复拉取
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, file.kind, file.mimeType, file.name]);
 
   const isVideo = file.kind === "video";
@@ -307,7 +311,6 @@ export function PreviewModal({
   const isImage = file.kind === "image";
   const showPlaylist = (isVideo || isAudio) && playlist.length > 0;
   const showImageStrip = isImage && imageList.length > 0;
-  const trackLabel = isAudio ? "歌词" : "字幕";
   const trackFiles = isAudio ? lyricFiles : subtitleFiles;
 
   return (
