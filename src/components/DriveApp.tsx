@@ -5,6 +5,16 @@ import type { DriveFile, ListFilesResult } from "@/lib/types";
 import { formatBytes, formatDate, joinFolder, kindLabel, parentFolder, sanitizeFolder } from "@/lib/utils";
 import { useUrlState } from "@/lib/use-url-state";
 import { errorMessage, toast } from "@/lib/toast";
+import {
+  buildCrumbs,
+  isSortDir,
+  isSortKey,
+  nextSort,
+  sortFiles,
+  sortFolders,
+  type SortDir,
+  type SortKey,
+} from "@/lib/drive-list";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { BtnGhost, BtnPrimary, Dialog, DialogInput } from "./Dialog";
 import { FileIcon } from "./FileIcon";
@@ -47,17 +57,6 @@ type Health = {
     maxLabel: string;
     workspaceName: string | null;
   } | null;
-};
-
-type SortKey = "name" | "size" | "kind" | "createdTime";
-type SortDir = "asc" | "desc";
-
-const KIND_SORT_ORDER: Record<string, number> = {
-  image: 0,
-  video: 1,
-  audio: 2,
-  pdf: 3,
-  file: 4,
 };
 
 type CtxTarget =
@@ -264,11 +263,9 @@ export function DriveApp({
       const saved = window.localStorage.getItem("notionpan-view");
       if (saved === "gallery" || saved === "list") setViewMode(saved);
       const sk = window.localStorage.getItem("notionpan-sort-key");
-      if (sk === "name" || sk === "size" || sk === "kind" || sk === "createdTime") {
-        setSortKey(sk);
-      }
+      if (isSortKey(sk)) setSortKey(sk);
       const sd = window.localStorage.getItem("notionpan-sort-dir");
-      if (sd === "asc" || sd === "desc") setSortDir(sd);
+      if (isSortDir(sd)) setSortDir(sd);
     } catch {
       // ignore
     }
@@ -286,55 +283,16 @@ export function DriveApp({
     }
   }, [viewMode, sortKey, sortDir, viewReady]);
 
-  const sortedFiles = useMemo(() => {
-    const list = files.slice();
-    const dir = sortDir === "asc" ? 1 : -1;
-    list.sort((a, b) => {
-      let cmp = 0;
-      if (sortKey === "name") {
-        cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true, sensitivity: "base" });
-      } else if (sortKey === "size") {
-        cmp = (a.size || 0) - (b.size || 0);
-      } else if (sortKey === "kind") {
-        const ka = KIND_SORT_ORDER[a.kind] ?? 9;
-        const kb = KIND_SORT_ORDER[b.kind] ?? 9;
-        cmp = ka - kb;
-        if (cmp === 0) {
-          cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true });
-        }
-      } else {
-        cmp = (a.createdTime || "").localeCompare(b.createdTime || "");
-      }
-      if (cmp === 0) {
-        cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true });
-      }
-      return cmp * dir;
-    });
-    return list;
-  }, [files, sortKey, sortDir]);
-
-  const sortedFolders = useMemo(() => {
-    const list = folders.slice();
-    if (sortKey === "name") {
-      list.sort((a, b) => {
-        const cmp = a.localeCompare(b, "zh-CN", { numeric: true, sensitivity: "base" });
-        return sortDir === "asc" ? cmp : -cmp;
-      });
-    } else {
-      // 其它字段文件夹无值：保持名称升序，始终排在文件前
-      list.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
-    }
-    return list;
-  }, [folders, sortKey, sortDir]);
+  const sortedFiles = useMemo(() => sortFiles(files, sortKey, sortDir), [files, sortKey, sortDir]);
+  const sortedFolders = useMemo(
+    () => sortFolders(folders, sortKey, sortDir),
+    [folders, sortKey, sortDir],
+  );
 
   const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortKey(key);
-      // 名称/类型默认升序，大小/时间默认降序
-      setSortDir(key === "name" || key === "kind" ? "asc" : "desc");
-    }
+    const next = nextSort({ key: sortKey, dir: sortDir }, key);
+    setSortKey(next.key);
+    setSortDir(next.dir);
   };
 
   const sortArrow = (key: SortKey) => {
@@ -404,18 +362,7 @@ export function DriveApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedFiles, folder]);
 
-  const crumbs = useMemo(() => {
-    const f = sanitizeFolder(folder);
-    if (f === "/") return [{ label: "根目录", path: "/" }];
-    const parts = f.split("/").filter(Boolean);
-    const items = [{ label: "根目录", path: "/" }];
-    let cur = "";
-    for (const p of parts) {
-      cur += `/${p}`;
-      items.push({ label: p, path: cur });
-    }
-    return items;
-  }, [folder]);
+  const crumbs = useMemo(() => buildCrumbs(folder), [folder]);
 
   const loadHealth = useCallback(async () => {
     try {
