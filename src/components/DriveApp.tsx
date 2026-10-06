@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DriveFile, ListFilesResult } from "@/lib/types";
 import { formatBytes, formatDate, joinFolder, kindLabel, parentFolder, sanitizeFolder } from "@/lib/utils";
+import { useUrlState } from "@/lib/use-url-state";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { BtnGhost, BtnPrimary, Dialog, DialogInput } from "./Dialog";
 import { FileIcon } from "./FileIcon";
@@ -103,7 +104,12 @@ export function DriveApp({
   onOpenAdmin?: () => void;
   onLogout?: () => void;
 } = {}) {
-  const [folder, setFolder] = useState("/");
+  // 当前文件夹写在地址栏（?path=）：后退返回上一级、刷新保持、可深链
+  const [{ folder }, navigateUrl] = useUrlState();
+  const setFolder = useCallback(
+    (next: string) => navigateUrl({ folder: next }),
+    [navigateUrl],
+  );
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);

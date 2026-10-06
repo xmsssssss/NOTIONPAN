@@ -5,6 +5,7 @@ import { DriveApp } from "./DriveApp";
 import { LoginPage, type LoginSuccessPayload } from "./LoginPage";
 import { AdminPage } from "./AdminPage";
 import { EnvSetupPage } from "./EnvSetupPage";
+import { useUrlState } from "@/lib/use-url-state";
 
 type AuthStatus = {
   setupCompleted: boolean;
@@ -23,7 +24,8 @@ type AuthStatus = {
 export function AuthShell() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<"app" | "admin" | "env">("app");
+  // 视图写在地址栏（?view=admin）：刷新/后退保持；未配置 Notion 时网盘视图自动显示引导页
+  const [{ view }, navigate] = useUrlState();
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -35,11 +37,6 @@ export function AuthShell() {
       setStatus(data);
       if (typeof document !== "undefined" && data.siteTitle) {
         document.title = data.siteTitle;
-      }
-      if (data.isLoggedIn && !data.hasNotionConfig) {
-        setView((v) => (v === "admin" ? v : "env"));
-      } else if (data.isLoggedIn && data.hasNotionConfig) {
-        setView((v) => (v === "env" ? "app" : v));
       }
       return data as AuthStatus;
     } catch (e) {
@@ -77,11 +74,7 @@ export function AuthShell() {
 
     // 再拉一次完整状态（含 hasNotionConfig）
     const data = await refresh();
-    if (data?.isLoggedIn && !data.hasNotionConfig) {
-      setView("env");
-    } else if (data?.isLoggedIn) {
-      setView("app");
-    } else if (payload?.isLoggedIn) {
+    if (!data?.isLoggedIn && payload?.isLoggedIn) {
       // Cookie 可能因 Secure 未写入：提示并硬刷新一次
       setError(
         "登录成功但会话未生效（常见于 production + HTTP）。请设置 COOKIE_SECURE=0 后重启，或使用 HTTPS。",
@@ -138,11 +131,11 @@ export function AuthShell() {
       <AdminPage
         siteTitle={status.siteTitle}
         username={status.sessionUser || status.username || ""}
-        onBack={() => setView(status.hasNotionConfig ? "app" : "env")}
+        onBack={() => navigate({ view: "app" })}
         onChanged={() => void refresh()}
         onLogout={async () => {
           await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-          setView("app");
+          navigate({ view: "app" }, { replace: true });
           setLoading(true);
           void refresh();
         }}
@@ -150,15 +143,14 @@ export function AuthShell() {
     );
   }
 
-  if (!status.hasNotionConfig || view === "env") {
+  if (!status.hasNotionConfig) {
     return (
       <EnvSetupPage
         siteTitle={status.siteTitle}
         onSuccess={() => {
-          setView("app");
           void refresh();
         }}
-        onOpenAdmin={() => setView("admin")}
+        onOpenAdmin={() => navigate({ view: "admin" })}
       />
     );
   }
@@ -175,7 +167,7 @@ export function AuthShell() {
         username={status.sessionUser || status.username || ""}
           siteIcon={status.siteIcon}
           autoPlay={status.autoPlay !== false}
-          onOpenAdmin={() => setView("admin")}
+          onOpenAdmin={() => navigate({ view: "admin" })}
           onLogout={async () => {
             await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
             setLoading(true);
