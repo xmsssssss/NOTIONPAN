@@ -31,6 +31,12 @@ import {
   withNotionRetry,
 } from "./notion";
 import {
+  BLOCK_LIMIT_MESSAGE,
+  createWithCommitRecovery,
+  isBlockLimitError,
+} from "./notion-errors";
+import { getRuntimeEnv } from "./runtime-env";
+import {
   createImportJob,
   getImportJob,
   getImportJobByUploadId,
@@ -302,34 +308,42 @@ async function createPage(
   children?: unknown[],
 ): Promise<PageLike> {
   const dataSourceId = await getDataSourceId(notion);
-  if (dataSourceId) {
-    return (await withNotionRetry(
-      () =>
-        notion.pages.create({
-          parent: { type: "data_source_id", data_source_id: dataSourceId },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          properties: properties as any,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ...(children ? { children: children as any } : {}),
-        }),
-      "创建页面",
-      2,
-      { idempotent: false },
-    )) as unknown as PageLike;
+  const parent = dataSourceId
+    ? { type: "data_source_id" as const, data_source_id: dataSourceId }
+    : { database_id: getDatabaseId() };
+  try {
+    // 503「已保存但响应超时」：按 committed_resource_id 读回，避免重复建页 / 孤儿上传
+    return await createWithCommitRecovery(
+      async () =>
+        (await withNotionRetry(
+          () =>
+            notion.pages.create({
+              parent,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              properties: properties as any,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ...(children ? { children: children as any } : {}),
+            }),
+          "创建页面",
+          2,
+          { idempotent: false },
+        )) as unknown as PageLike,
+      async (id) =>
+        (await withNotionRetry(
+          () => notion.pages.retrieve({ page_id: id }),
+          "读回已创建页面",
+        )) as unknown as PageLike,
+    );
+  } catch (err) {
+    if (isBlockLimitError(err)) throw new Error(BLOCK_LIMIT_MESSAGE, { cause: err });
+    throw err;
   }
-  return (await withNotionRetry(
-    () =>
-      notion.pages.create({
-        parent: { database_id: getDatabaseId() },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        properties: properties as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...(children ? { children: children as any } : {}),
-      }),
-    "创建页面",
-    2,
-    { idempotent: false },
-  )) as unknown as PageLike;
+}
+
+/** NOTION_SKIP_PREVIEW_BLOCK=1：不在页面正文追加预览块，每个文件少占一个块 */
+function shouldSkipPreviewBlock(): boolean {
+  const v = (getRuntimeEnv("NOTION_SKIP_PREVIEW_BLOCK") || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 /**
@@ -364,6 +378,7 @@ async function appendMediaPreview(
   fileUploadId: string,
   caption?: string,
 ): Promise<void> {
+  if (shouldSkipPreviewBlock()) return;
   try {
     await withNotionRetry(
       () =>

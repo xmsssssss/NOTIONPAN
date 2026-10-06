@@ -120,18 +120,30 @@ SESSION_SECRET='你的长随机密钥' COOKIE_SECURE=0 npm start
 
 官方文档：[Notion Developers — 入门概览](https://developers.notion.com/guides/get-started/overview)
 
-### 1. 集成令牌
+### 1. 访问令牌（二选一）
 
-1. 打开 [Notion 集成](https://www.notion.so/my-integrations)
-2. 创建新集成
-3. 复制密钥（`ntn_…`）→ `NOTION_API_KEY`
+**A · 个人访问令牌（PAT，推荐）**
+
+1. 打开 [Personal access tokens](https://www.notion.so/developers/tokens) → **New token**
+2. 能力勾选 **Notion API**，选数据库所在工作区和有效期（最长 1 年）
+3. 复制令牌（`ntn_…`，只显示一次）→ `NOTION_API_KEY`
+
+以你本人身份访问，**无需「添加连接」**，不受多成员免费工作区「累计 1000 块」上限约束。你失去访问权、离开工作区、令牌到期或被撤销后会返回 401，需要重新创建。免费工作区只有所有者能创建 PAT。
+
+**B · 内部连接（集成令牌）**
+
+1. 打开 [Notion 开发者后台](https://app.notion.com/developers) → 连接 → 新连接
+2. 选择访问令牌和工作区，创建后复制令牌（`ntn_…`）→ `NOTION_API_KEY`
+3. 手动建库时需把数据库授权给该连接（见下表 B）
+
+> **多成员免费工作区**：自 2026-09-01 起，内部连接受「累计 1000 块」上限约束（每个文件约占 1–2 块，设置 `NOTION_SKIP_PREVIEW_BLOCK=1` 可减半）。
 
 ### 2. 数据库
 
 | 方式 | 步骤 |
 | --- | --- |
 | **A · 自动创建** | 后台 → **索引同步** → 创建数据库 |
-| **B · 手动创建** | 按下方 Schema 建库，再将集成加入连接（**⋯ → 连接**）（建议复制发给notionAI） |
+| **B · 手动创建** | 按下方 Schema 建库（建议复制发给 Notion AI）；使用内部连接时再将其加入连接（**⋯ → 连接**），PAT 无需此步 |
 
 **手动 Schema**
 
@@ -160,10 +172,12 @@ https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?v=...
 | `SESSION_SECRET` | **生产** | 会话加密密钥 · ≥32 字符 |
 | `COOKIE_SECURE` |  | `0` = 允许 HTTP · `1` = 仅 HTTPS Cookie |
 | `PORT` |  | Compose 映射端口 · 默认 `3000` |
-| `NOTION_API_KEY` | * | 集成令牌 · 也可网页配置 |
+| `NOTION_API_KEY` | * | PAT 或集成令牌 · 也可网页配置 |
 | `NOTION_DATABASE_ID` | * | 数据库 ID · 也可网页配置 / 自动创建 |
 | `NOTION_DATA_SOURCE_ID` |  | 一般留空 |
 | `NOTION_WEBHOOK_TOKEN` |  | Webhook 校验后自动写入 |
+| `NOTION_MAX_UPLOAD_BYTES` |  | 单文件上限（字节）· 仅在 Notion 未返回上限时生效 · 默认 5MB |
+| `NOTION_SKIP_PREVIEW_BLOCK` |  | `1` = 不在页面正文追加预览块，每个文件少占 1 块 |
 | `DATA_DIR` |  | 数据目录 · 默认 `./data` · Docker `/app/data` |
 
 \* 登录后在网页配置则可省略。

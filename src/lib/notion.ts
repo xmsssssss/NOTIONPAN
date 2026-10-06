@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import { getRuntimeEnv, getRuntimeEnvRequired, ensureRuntimeEnvLoaded } from "./runtime-env";
 import { formatNetworkError, isConnectFailure, isRetriableNetworkError } from "./utils";
+import { parseUploadLimitOverride, parseUsersMe } from "./notion-errors";
 
 export function getEnv(name: string): string {
   return getRuntimeEnvRequired(name);
@@ -9,49 +10,63 @@ export function getEnv(name: string): string {
 export type WorkspaceUploadLimit = {
   maxFileUploadSizeInBytes: number;
   workspaceName: string | null;
+  /** bot = 集成令牌；person = 个人访问令牌（PAT）；null = 未知 */
+  tokenType?: "bot" | "person" | null;
+  /** 上限来源：notion = users.me 返回；override = NOTION_MAX_UPLOAD_BYTES；default = 兜底 5MB */
+  source?: "notion" | "override" | "default";
 };
 
-let cachedUploadLimit: { at: number; value: WorkspaceUploadLimit } | null = null;
+let cachedUploadLimit: { at: number; key: string; value: WorkspaceUploadLimit } | null = null;
 const UPLOAD_LIMIT_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_FREE_LIMIT = 5 * 1024 * 1024;
 
-/** 读取 bot 工作区单文件上传上限（users.me） */
+/**
+ * 读取工作区单文件上传上限（users.me）。
+ * - 内部集成与 PAT 的 users.me 都会返回 bot.workspace_limits（PAT 以 bot.owner.type=user 区分）
+ * - 若未返回该字段 → 用 NOTION_MAX_UPLOAD_BYTES，否则兜底 5MB
+ * NOTION_MAX_UPLOAD_BYTES 只在 Notion 未返回上限时生效，不会放宽 Notion 给出的值。
+ */
 export async function getWorkspaceUploadLimit(
   force = false,
 ): Promise<WorkspaceUploadLimit> {
+  const override = parseUploadLimitOverride(getRuntimeEnv("NOTION_MAX_UPLOAD_BYTES"));
+  const cacheKey = `${getRuntimeEnv("NOTION_API_KEY") ?? ""}|${override ?? ""}`;
   if (
     !force &&
     cachedUploadLimit &&
+    cachedUploadLimit.key === cacheKey &&
     Date.now() - cachedUploadLimit.at < UPLOAD_LIMIT_TTL_MS
   ) {
     return cachedUploadLimit.value;
   }
+  const fallback = (
+    tokenType: WorkspaceUploadLimit["tokenType"],
+    workspaceName: string | null,
+  ): WorkspaceUploadLimit => ({
+    maxFileUploadSizeInBytes: override ?? DEFAULT_FREE_LIMIT,
+    workspaceName,
+    tokenType,
+    source: override ? "override" : "default",
+  });
+  let value: WorkspaceUploadLimit;
   try {
     const notion = getNotionClient();
     const me = await withNotionRetry(() => notion.users.me({}), "读取工作区限额", 2);
-    const bot = (me as {
-      type?: string;
-      bot?: {
-        workspace_name?: string | null;
-        workspace_limits?: { max_file_upload_size_in_bytes?: number };
-      };
-    }).bot;
-    const max =
-      bot?.workspace_limits?.max_file_upload_size_in_bytes ?? DEFAULT_FREE_LIMIT;
-    const value: WorkspaceUploadLimit = {
-      maxFileUploadSizeInBytes: max > 0 ? max : DEFAULT_FREE_LIMIT,
-      workspaceName: bot?.workspace_name ?? null,
-    };
-    cachedUploadLimit = { at: Date.now(), value };
-    return value;
+    const id = parseUsersMe(me);
+    value =
+      id.maxFileUploadSizeInBytes != null
+        ? {
+            maxFileUploadSizeInBytes: id.maxFileUploadSizeInBytes,
+            workspaceName: id.workspaceName,
+            tokenType: id.tokenType,
+            source: "notion",
+          }
+        : fallback(id.tokenType, id.workspaceName);
   } catch {
-    const value: WorkspaceUploadLimit = {
-      maxFileUploadSizeInBytes: DEFAULT_FREE_LIMIT,
-      workspaceName: null,
-    };
-    cachedUploadLimit = { at: Date.now(), value };
-    return value;
+    value = fallback(null, null);
   }
+  cachedUploadLimit = { at: Date.now(), key: cacheKey, value };
+  return value;
 }
 
 export function assertWithinUploadLimit(

@@ -27,6 +27,8 @@ export async function GET() {
       maxFileUploadSizeInBytes: number;
       maxLabel: string;
       workspaceName: string | null;
+      tokenType: "bot" | "person" | null;
+      source: "notion" | "override" | "default" | null;
     } | null = null;
     try {
       const lim = await getUploadLimitInfo();
@@ -34,6 +36,8 @@ export async function GET() {
         maxFileUploadSizeInBytes: lim.maxFileUploadSizeInBytes,
         maxLabel: formatBytes(lim.maxFileUploadSizeInBytes),
         workspaceName: lim.workspaceName,
+        tokenType: lim.tokenType ?? null,
+        source: lim.source ?? null,
       };
     } catch {
       uploadLimit = null;

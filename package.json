@@ -6,7 +6,8 @@
     "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
     "build": "next build --webpack",
     "start": "next start -H 0.0.0.0 -p 3000",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --no-warnings --import ./tests/helpers/register.mjs --test \"tests/**/*.test.mjs\""
   },
   "dependencies": {
     "@notionhq/client": "^5.27.0",

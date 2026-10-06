@@ -17,6 +17,8 @@ export function EnvSetupPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  // 令牌类型只影响引导文案：PAT 不需要给数据库添加连接
+  const [tokenMode, setTokenMode] = useState<"pat" | "integration">("pat");
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,7 +85,7 @@ export function EnvSetupPage({
       <div className="mb-6 flex flex-wrap gap-2">
         {[
           { n: 1 as const, t: "获取 API Key" },
-          { n: 2 as const, t: "建库并授权" },
+          { n: 2 as const, t: tokenMode === "pat" ? "创建数据库" : "建库并授权" },
           { n: 3 as const, t: "获取 Database ID" },
           { n: 4 as const, t: "填写配置" },
         ].map((s) => (
@@ -105,37 +107,114 @@ export function EnvSetupPage({
       <div className="space-y-4">
         {step === 1 && (
           <Card title="① 获取 NOTION_API_KEY（访问令牌）">
-            <ol className="list-decimal space-y-2.5 pl-5 text-sm leading-relaxed text-slate-600">
-              <li>
-                打开 Notion 开发者后台：
-                <a
-                  className="ml-1 break-all font-medium text-sky-600 underline"
-                  href="https://app.notion.com/developers"
-                  target="_blank"
-                  rel="noreferrer"
+            <div
+              role="radiogroup"
+              aria-label="令牌类型"
+              className="mb-4 grid gap-2 sm:grid-cols-2"
+            >
+              {[
+                {
+                  v: "pat" as const,
+                  t: "个人访问令牌（PAT）· 推荐",
+                  d: "以你本人身份访问，无需给数据库添加连接；不受多成员免费工作区 1000 块上限约束。",
+                },
+                {
+                  v: "integration" as const,
+                  t: "内部连接（集成令牌）",
+                  d: "工作区所有，不依赖某个成员；需要把数据库手动授权给该连接。",
+                },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  role="radio"
+                  aria-checked={tokenMode === o.v}
+                  onClick={() => setTokenMode(o.v)}
+                  className={`rounded-xl border px-3 py-2.5 text-left transition ${
+                    tokenMode === o.v
+                      ? "border-sky-400 bg-sky-50 ring-2 ring-sky-100"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
                 >
-                  https://app.notion.com/developers
-                </a>
-              </li>
-              <li>
-                点击左侧 <strong>「连接」</strong>（Connections）
-              </li>
-              <li>
-                点击右侧 <strong>「+ 新连接」</strong>（New connection）
-              </li>
-              <li>
-                输入<strong>连接名称</strong>，选择<strong>访问令牌</strong>，选择要使用的
-                <strong>工作空间</strong>
-              </li>
-              <li>
-                点击<strong>创建连接</strong>
-              </li>
-              <li>
-                选中你的连接，复制 <strong>访问令牌</strong>
-                <br />
-                <span className="text-xs text-slate-400">一般以 ntn_ 开头</span>
-              </li>
-            </ol>
+                  <div className="text-sm font-medium text-slate-800">{o.t}</div>
+                  <div className="mt-1 text-xs leading-relaxed text-slate-500">{o.d}</div>
+                </button>
+              ))}
+            </div>
+
+            {tokenMode === "pat" ? (
+              <ol className="list-decimal space-y-2.5 pl-5 text-sm leading-relaxed text-slate-600">
+                <li>
+                  打开个人访问令牌页面：
+                  <a
+                    className="ml-1 break-all font-medium text-sky-600 underline"
+                    href="https://www.notion.so/developers/tokens"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    https://www.notion.so/developers/tokens
+                  </a>
+                </li>
+                <li>
+                  点击 <strong>「New token」</strong>，输入<strong>令牌名称</strong>
+                </li>
+                <li>
+                  能力勾选 <strong>Notion API</strong>；如出现工作空间选择，选数据库所在的
+                  <strong>工作空间</strong>
+                </li>
+                <li>
+                  选择<strong>有效期</strong>（最长 1 年，不选默认 1 年），点击
+                  <strong>「Create token」</strong>
+                </li>
+                <li>
+                  立即复制令牌（只显示这一次）
+                  <br />
+                  <span className="text-xs text-slate-400">一般以 ntn_ 开头</span>
+                </li>
+              </ol>
+            ) : (
+              <ol className="list-decimal space-y-2.5 pl-5 text-sm leading-relaxed text-slate-600">
+                <li>
+                  打开 Notion 开发者后台：
+                  <a
+                    className="ml-1 break-all font-medium text-sky-600 underline"
+                    href="https://app.notion.com/developers"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    https://app.notion.com/developers
+                  </a>
+                </li>
+                <li>
+                  点击左侧 <strong>「连接」</strong>（Connections）
+                </li>
+                <li>
+                  点击右侧 <strong>「+ 新连接」</strong>（New connection）
+                </li>
+                <li>
+                  输入<strong>连接名称</strong>，选择<strong>访问令牌</strong>，选择要使用的
+                  <strong>工作空间</strong>
+                </li>
+                <li>
+                  点击<strong>创建连接</strong>
+                </li>
+                <li>
+                  选中你的连接，复制 <strong>访问令牌</strong>
+                  <br />
+                  <span className="text-xs text-slate-400">一般以 ntn_ 开头</span>
+                </li>
+              </ol>
+            )}
+
+            {tokenMode === "pat" ? (
+              <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
+                PAT 用的是创建者本人的权限：你失去数据库访问权或离开工作区、令牌到期或被撤销后，网盘会无法访问（返回 401），需要重新创建并在后台替换。免费工作区只有所有者能创建 PAT。
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
+                多成员免费工作区：自 2026-09-01 起内部连接受「累计 1000 块」上限约束（每个文件约占 1–2 块），用满后无法再上传。
+              </div>
+            )}
             <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">
               本步复制的令牌，将在第 4 步填入 <code className="rounded bg-white px-1">NOTION_API_KEY</code>
             </div>
@@ -152,7 +231,7 @@ export function EnvSetupPage({
         )}
 
         {step === 2 && (
-          <Card title="② 创建数据库并为连接授权">
+          <Card title={tokenMode === "pat" ? "② 创建数据库" : "② 创建数据库并为连接授权"}>
             <ol className="list-decimal space-y-2.5 pl-5 text-sm leading-relaxed text-slate-600">
               <li>
                 新建<strong>私人页面</strong>，在下方「开始使用」中选择
@@ -189,15 +268,24 @@ export function EnvSetupPage({
                   建议：在 Notion 页面直接打开 AI，把上表发给它，让它帮你生成数据库结构。
                 </p>
               </li>
-              <li>
-                打开数据库页面 → 右上角 <strong>三个点 ···</strong> → 移到
-                <strong>「集成 / Integrations」</strong>
-              </li>
-              <li>
-                输入你在第 1 步创建的<strong>连接名称</strong>，点击
-                <strong>「添加到页面」</strong>
-              </li>
+              {tokenMode === "integration" && (
+                <>
+                  <li>
+                    打开数据库页面 → 右上角 <strong>三个点 ···</strong> → 移到
+                    <strong>「集成 / Integrations」</strong>
+                  </li>
+                  <li>
+                    输入你在第 1 步创建的<strong>连接名称</strong>，点击
+                    <strong>「添加到页面」</strong>
+                  </li>
+                </>
+              )}
             </ol>
+            {tokenMode === "pat" && (
+              <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                使用 PAT 无需「添加连接」：只要你本人能打开这个数据库即可。
+              </div>
+            )}
             <div className="mt-4 flex justify-between">
               <button
                 type="button"

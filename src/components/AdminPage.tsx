@@ -816,7 +816,7 @@ export function AdminPage({
                       label="Notion 访问令牌"
                       value={envKey}
                       onChange={setEnvKey}
-                      placeholder="ntn_...（显示 **** 表示已配置）"
+                      placeholder="ntn_...（PAT 或集成令牌；显示 **** 表示已配置）"
                     />
                     <Field
                       label="Notion 数据库 ID"

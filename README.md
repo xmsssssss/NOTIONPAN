@@ -112,18 +112,30 @@ SESSION_SECRET='your-long-random-secret' COOKIE_SECURE=0 npm start
 
 Official docs: [Notion Developers — Get started](https://developers.notion.com/guides/get-started/overview)
 
-### 1. Integration token
+### 1. Access token (pick one)
 
-1. Open [Notion Integrations](https://www.notion.so/my-integrations)
-2. Create a new integration
-3. Copy the secret (`ntn_…`) → `NOTION_API_KEY`
+**A · Personal access token (PAT, recommended)**
+
+1. Open [Personal access tokens](https://www.notion.so/developers/tokens) → **New token**
+2. Enable the **Notion API** capability, pick the workspace that holds the database and an expiration (max 1 year)
+3. Copy the token (`ntn_…`, shown once) → `NOTION_API_KEY`
+
+It acts as you, **needs no "Add connections"**, and is not subject to the 1,000-block limit for free multi-member workspaces. It stops working (401) if you lose access, leave the workspace, or the token expires or is revoked. On Free plans only workspace owners can create PATs.
+
+**B · Internal connection (integration token)**
+
+1. Open the [Notion developer portal](https://app.notion.com/developers) → Connections → New connection
+2. Choose access token and workspace, then copy the token (`ntn_…`) → `NOTION_API_KEY`
+3. For a manually created database, share it with the connection (see row B below)
+
+> **Free workspaces with multiple members**: since 2026-09-01, internal connections are subject to the 1,000 lifetime block limit (each file uses about 1–2 blocks; `NOTION_SKIP_PREVIEW_BLOCK=1` halves that).
 
 ### 2. Database
 
 | Path | Steps |
 | --- | --- |
 | **A · Auto-create** | Admin → **Index Sync** → create database |
-| **B · Manual** | Create a database with the schema below, then connect the integration (**⋯ → Connections**) (you can paste the schema to Notion AI) |
+| **B · Manual** | Create a database with the schema below (you can paste it to Notion AI); with an internal connection, also add it via **⋯ → Connections**. Not needed for a PAT |
 
 **Manual schema**
 
@@ -156,6 +168,8 @@ https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx?v=...
 | `NOTION_DATABASE_ID` | * | Database ID · or set / auto-create in the UI |
 | `NOTION_DATA_SOURCE_ID` |  | Usually leave empty |
 | `NOTION_WEBHOOK_TOKEN` |  | Written automatically after webhook verification |
+| `NOTION_MAX_UPLOAD_BYTES` |  | Per-file limit in bytes · used only when Notion returns none · default 5 MB |
+| `NOTION_SKIP_PREVIEW_BLOCK` |  | `1` = skip the in-page preview block, one block fewer per file |
 | `DATA_DIR` |  | Data root · default `./data` · Docker `/app/data` |
 
 \* Optional if configured in the web UI after login.
