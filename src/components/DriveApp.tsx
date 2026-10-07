@@ -995,13 +995,9 @@ export function DriveApp({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "重命名失败");
-      // 更新文件夹列表
-      setFolders((prev) =>
-        prev.map((f) => (f === renameFolderDialog ? name : f)).sort((a, b) => a.localeCompare(b, "zh-CN")),
-      );
       setRenameFolderDialog(null);
-      toast.success("已重命名");
       await loadFiles();
+      toast.success("已重命名");
     } catch (e) {
       toast.error(errorMessage(e, "重命名失败"));
     } finally {

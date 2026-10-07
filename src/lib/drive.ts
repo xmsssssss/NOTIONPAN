@@ -1636,6 +1636,8 @@ export async function renameFolder(folderPath: string, newName: string): Promise
   if (children.length === 0) return;
 
   const notion = getNotionClient();
+  const updatedFiles: DriveFile[] = [];
+  
   for (const child of children) {
     const oldChildFolder = child.folder;
     let newChildFolder: string;
@@ -1658,7 +1660,12 @@ export async function renameFolder(folderPath: string, newName: string): Promise
       "重命名文件夹",
     );
     const updated = await getFile(child.id);
-    upsertIndexRow(driveFileToRow(updated, isFolderMarker(updated)));
+    updatedFiles.push(updated);
+  }
+
+  // 批量更新本地索引，避免中间状态
+  for (const file of updatedFiles) {
+    upsertIndexRow(driveFileToRow(file, isFolderMarker(file)));
   }
 }
 
