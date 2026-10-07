@@ -36,6 +36,26 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 }
 
 /**
+ * 批量下载用：同源反代 + attachment，带 download 属性，不会跳走当前页。
+ * 注意走本机流量（302 到 Notion 时跨域，download 属性无效，多个文件会互相顶掉）。
+ */
+export function triggerAttachmentDownload(file: DriveFile): void {
+  const a = document.createElement("a");
+  a.href = `${fileDownloadHref(file.id)}?attachment=1`;
+  a.download = file.name;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    try {
+      document.body.removeChild(a);
+    } catch {
+      // ignore
+    }
+  }, 0);
+}
+
+/**
  * 打开/下载：只用一次隐藏 a 点击，避免 window.open(noopener) 在部分浏览器
  * 返回 null 后又走 fallback 导致双请求。
  */

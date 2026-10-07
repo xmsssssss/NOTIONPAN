@@ -24,15 +24,17 @@ function isTextLike(mime: string, name: string): boolean {
  * - 网站设置 resourceAccess=redirect（默认）：302 → Notion
  * - resourceAccess=proxy：本机反代
  * - ?proxy=1 强制反代（文本/PDF 预览）；?proxy=0 强制 302
+ * - ?attachment=1 强制反代并以附件下载（批量下载用：同源、不截断、不在页面内打开）
  */
 export async function GET(req: NextRequest, ctx: Ctx) {
   return withAuth(async () => {
     const { id } = await ctx.params;
     const proxyParam = req.nextUrl.searchParams.get("proxy");
+    const asAttachment = req.nextUrl.searchParams.get("attachment") === "1";
     const siteProxy = shouldProxyResourceAccess();
     // 显式 query 优先，否则跟网站设置
     const useProxy =
-      proxyParam === "1"
+      asAttachment || proxyParam === "1"
         ? true
         : proxyParam === "0"
           ? false
@@ -101,7 +103,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         upstream.headers.get("content-type") ||
         file.mimeType ||
         "application/octet-stream";
-      const asText = isTextLike(mime, file.name);
+      const asText = !asAttachment && isTextLike(mime, file.name);
 
       if (asText) {
         const text = await upstream.text();
@@ -122,7 +124,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       headers.set("Content-Type", mime);
       headers.set(
         "Content-Disposition",
-        `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        `${asAttachment ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(file.name)}`,
       );
       headers.set("Cache-Control", "private, max-age=120");
       headers.set("X-Content-Type-Options", "nosniff");

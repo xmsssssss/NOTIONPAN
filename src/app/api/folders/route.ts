@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
-import { createFolder, deleteFolder, renameFolder } from "@/lib/drive";
+import { createFolder, deleteFolder, listAllFolders, renameFolder } from "@/lib/drive";
 import { listIndexFilesUnder } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -19,6 +19,10 @@ export async function POST(req: NextRequest) {
   });
 }
 
+/**
+ * - 无参数：列出全部目录（移动弹窗用）
+ * - ?folder=/a：返回该目录下（含子目录）文件数量（删除文件夹确认用）
+ */
 export async function GET(req: NextRequest) {
   return withAuth(async () => {
     try {
@@ -26,7 +30,8 @@ export async function GET(req: NextRequest) {
       const folder = searchParams.get("folder");
 
       if (!folder || !folder.trim()) {
-        return NextResponse.json({ error: "需要 folder 参数" }, { status: 400 });
+        const folders = await listAllFolders();
+        return NextResponse.json({ folders });
       }
 
       const files = listIndexFilesUnder(folder);

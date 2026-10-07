@@ -64,6 +64,65 @@ export function nextSort(cur: { key: SortKey; dir: SortDir }, key: SortKey): { k
   return { key, dir: key === "name" || key === "kind" ? "asc" : "desc" };
 }
 
+// ---------- 多选 ----------
+
+/**
+ * 点击选择框：
+ * - 普通点击：切换该项
+ * - Shift 点击且有锚点：把锚点到当前项（按 orderedIds 顺序）整段设为「锚点项的目标状态」
+ *   即当前项被勾上则整段勾上，否则整段取消，与常见文件管理器一致
+ */
+export function toggleSelection(
+  selected: ReadonlySet<string>,
+  orderedIds: readonly string[],
+  id: string,
+  opts: { shift?: boolean; anchor?: string | null } = {},
+): Set<string> {
+  const next = new Set(selected);
+  const turnOn = !selected.has(id);
+  const anchor = opts.anchor;
+  if (opts.shift && anchor && anchor !== id) {
+    const a = orderedIds.indexOf(anchor);
+    const b = orderedIds.indexOf(id);
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      for (let i = lo; i <= hi; i++) {
+        if (turnOn) next.add(orderedIds[i]);
+        else next.delete(orderedIds[i]);
+      }
+      return next;
+    }
+  }
+  if (turnOn) next.add(id);
+  else next.delete(id);
+  return next;
+}
+
+/** 列表刷新后去掉已不存在的项；无变化时返回原对象，避免多余渲染 */
+export function pruneSelection(selected: ReadonlySet<string>, existingIds: readonly string[]): ReadonlySet<string> {
+  if (selected.size === 0) return selected;
+  const exist = new Set(existingIds);
+  let changed = false;
+  const next = new Set<string>();
+  for (const id of selected) {
+    if (exist.has(id)) next.add(id);
+    else changed = true;
+  }
+  return changed ? next : selected;
+}
+
+/** 全选复选框状态 */
+export function selectionState(
+  selected: ReadonlySet<string>,
+  ids: readonly string[],
+): "none" | "some" | "all" {
+  if (ids.length === 0) return "none";
+  let n = 0;
+  for (const id of ids) if (selected.has(id)) n++;
+  if (n === 0) return "none";
+  return n === ids.length ? "all" : "some";
+}
+
 export type Crumb = { label: string; path: string };
 
 export function buildCrumbs(folder: string, rootLabel = "根目录"): Crumb[] {

@@ -5,8 +5,11 @@ import {
   isSortDir,
   isSortKey,
   nextSort,
+  pruneSelection,
+  selectionState,
   sortFiles,
   sortFolders,
+  toggleSelection,
 } from "../src/lib/drive-list.ts";
 
 const f = (name, size, kind, createdTime) => ({ name, size, kind, createdTime });
@@ -62,6 +65,49 @@ test("isSortKey / isSortDir", () => {
   assert.ok(!isSortKey(null));
   assert.ok(isSortDir("asc"));
   assert.ok(!isSortDir("up"));
+});
+
+const ids = ["a", "b", "c", "d", "e"];
+const sorted = (s) => [...s].sort();
+
+test("toggleSelection：普通点击切换", () => {
+  let s = toggleSelection(new Set(), ids, "b");
+  assert.deepEqual(sorted(s), ["b"]);
+  s = toggleSelection(s, ids, "b");
+  assert.deepEqual(sorted(s), []);
+});
+
+test("toggleSelection：Shift 区间勾选（正反方向）", () => {
+  const s1 = toggleSelection(new Set(["b"]), ids, "d", { shift: true, anchor: "b" });
+  assert.deepEqual(sorted(s1), ["b", "c", "d"]);
+  const s2 = toggleSelection(new Set(["d"]), ids, "a", { shift: true, anchor: "d" });
+  assert.deepEqual(sorted(s2), ["a", "b", "c", "d"]);
+});
+
+test("toggleSelection：Shift 点击已选项则整段取消", () => {
+  const s = toggleSelection(new Set(["a", "b", "c", "d"]), ids, "c", { shift: true, anchor: "a" });
+  assert.deepEqual(sorted(s), ["d"]);
+});
+
+test("toggleSelection：锚点失效时退化为普通切换，且不改原集合", () => {
+  const orig = new Set(["a"]);
+  const s = toggleSelection(orig, ids, "c", { shift: true, anchor: "zzz" });
+  assert.deepEqual(sorted(s), ["a", "c"]);
+  assert.deepEqual(sorted(orig), ["a"]);
+});
+
+test("pruneSelection：去掉不存在项，无变化返回原对象", () => {
+  const s = new Set(["a", "x"]);
+  assert.deepEqual(sorted(pruneSelection(s, ids)), ["a"]);
+  const same = new Set(["a", "b"]);
+  assert.equal(pruneSelection(same, ids), same);
+});
+
+test("selectionState", () => {
+  assert.equal(selectionState(new Set(), ids), "none");
+  assert.equal(selectionState(new Set(["a"]), ids), "some");
+  assert.equal(selectionState(new Set(ids), ids), "all");
+  assert.equal(selectionState(new Set(["a"]), []), "none");
 });
 
 test("buildCrumbs", () => {

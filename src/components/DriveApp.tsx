@@ -10,8 +10,11 @@ import {
   isSortDir,
   isSortKey,
   nextSort,
+  pruneSelection,
+  selectionState,
   sortFiles,
   sortFolders,
+  toggleSelection,
   type SortDir,
   type SortKey,
 } from "@/lib/drive-list";
@@ -26,6 +29,7 @@ import { SiteIcon } from "./SiteIcon";
 import { ThemeChibi } from "./ThemeToggle";
 import { ThumbImage } from "./ThumbImage";
 import {
+  IconCheck,
   IconClose,
   IconDownload,
   IconEdit,
@@ -225,6 +229,13 @@ export function DriveApp({
   const [viewReady, setViewReady] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("createdTime");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // 多选（仅文件；文件夹走右键菜单）
+  const [rawSelected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  /** 画廊/手机视图下点击即勾选；桌面表格有复选框，无需进入此模式 */
+  const [selectMode, setSelectMode] = useState(false);
+  const selectAnchorRef = useRef<string | null>(null);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [batchMoveOpen, setBatchMoveOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
   const fabRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -287,6 +298,75 @@ export function DriveApp({
     () => sortFolders(folders, sortKey, sortDir),
     [folders, sortKey, sortDir],
   );
+
+  const sortedFileIds = useMemo(() => sortedFiles.map((f) => f.id), [sortedFiles]);
+  // 切目录 / 搜索时清空选择：渲染期按 key 调整 state（React 推荐写法，免一次多余渲染）
+  const selectScopeKey = `${folder}\n${search}`;
+  const [selectScope, setSelectScope] = useState(selectScopeKey);
+  if (selectScope !== selectScopeKey) {
+    setSelectScope(selectScopeKey);
+    setSelected(new Set());
+    setSelectMode(false);
+  }
+  // 列表变化（删除、移走、刷新）后只保留仍存在的项：派生而非同步
+  const selected = useMemo(
+    () => pruneSelection(rawSelected, sortedFileIds),
+    [rawSelected, sortedFileIds],
+  );
+  const selectedFiles = useMemo(
+    () => sortedFiles.filter((f) => selected.has(f.id)),
+    [sortedFiles, selected],
+  );
+  const allSelectState = selectionState(selected, sortedFileIds);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setSelectMode(false);
+    selectAnchorRef.current = null;
+  }, []);
+
+  const toggleSelect = (id: string, shift = false) => {
+    // 基于已裁剪的 selected，避免旧目录残留 id 混入
+    setSelected(toggleSelection(selected, sortedFileIds, id, { shift, anchor: selectAnchorRef.current }));
+    selectAnchorRef.current = id;
+  };
+
+  const toggleSelectAll = () => {
+    setSelected(allSelectState === "all" ? new Set() : new Set(sortedFileIds));
+    selectAnchorRef.current = null;
+  };
+
+  const selectionActive = selectMode || selected.size > 0;
+
+  /**
+   * 点击文件：选择中 → 切换勾选；Ctrl/Cmd 点击 → 切换勾选；Shift 点击 → 区间；否则预览
+   */
+  const onFileItemClick = (e: React.MouseEvent, file: DriveFile) => {
+    if (selectionActive || e.ctrlKey || e.metaKey || e.shiftKey) {
+      e.preventDefault();
+      toggleSelect(file.id, e.shiftKey);
+      return;
+    }
+    openPreview(file);
+  };
+
+  // Esc 取消选择；Ctrl/Cmd+A 全选（输入框、弹窗内不拦截）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("input, textarea, select, [contenteditable='true']")) return;
+      // 弹窗 / 预览 / 右键菜单打开时 Esc 归它们
+      if (document.querySelector("[role='dialog'], [role='menu']") || preview) return;
+      if (e.key === "Escape" && (selected.size > 0 || selectMode)) {
+        clearSelection();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && sortedFileIds.length > 0) {
+        e.preventDefault();
+        setSelected(new Set(sortedFileIds));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected.size, selectMode, sortedFileIds, clearSelection, preview]);
 
   const toggleSort = (key: SortKey) => {
     const next = nextSort({ key: sortKey, dir: sortDir }, key);
@@ -1027,6 +1107,112 @@ export function DriveApp({
     }
   };
 
+  // ---------- 批量操作 ----------
+
+  type BatchResult = {
+    succeeded: string[];
+    failed: Array<{ id: string; error: string }>;
+    files: DriveFile[];
+  };
+
+  const runBatch = async (
+    body: { action: "delete" | "move"; ids: string[]; folder?: string },
+  ): Promise<BatchResult> => {
+    const res = await fetch("/api/files/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "批量操作失败");
+    return data as BatchResult;
+  };
+
+  /** 汇总提示：全部成功 / 部分失败（展示第一条原因） */
+  const reportBatch = (verb: string, r: BatchResult) => {
+    if (r.failed.length === 0) {
+      toast.success(`已${verb} ${r.succeeded.length} 个文件`);
+    } else if (r.succeeded.length === 0) {
+      toast.error(`${verb}失败：${r.failed[0].error}`);
+    } else {
+      toast.error(
+        `已${verb} ${r.succeeded.length} 个，${r.failed.length} 个失败：${r.failed[0].error}`,
+      );
+    }
+  };
+
+  const openBatchMove = () => {
+    if (selected.size === 0) return;
+    setMoveValue(folder);
+    setBatchMoveOpen(true);
+    void loadAllFolders();
+  };
+
+  const submitBatchDelete = async () => {
+    const ids = selectedFiles.map((f) => f.id);
+    if (ids.length === 0) return;
+    setDialogBusy(true);
+    try {
+      const r = await runBatch({ action: "delete", ids });
+      const gone = new Set(r.succeeded);
+      setFiles((prev) => prev.filter((f) => !gone.has(f.id)));
+      if (preview && gone.has(preview.id)) setPreview(null);
+      if (audioSessionRef.current && gone.has(audioSessionRef.current.file.id)) {
+        stopAudioSession();
+      } else {
+        setAudioSession((s) => (s ? { ...s, siblings: s.siblings.filter((f) => !gone.has(f.id)) } : s));
+      }
+      // 失败的保持勾选，方便重试
+      setSelected(new Set(r.failed.map((f) => f.id)));
+      setBatchDeleteOpen(false);
+      reportBatch("删除", r);
+    } catch (e) {
+      toast.error(errorMessage(e, "批量删除失败"));
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const submitBatchMove = async () => {
+    const target = sanitizeFolder(moveValue.trim() || "/");
+    // 已在目标目录的跳过
+    const ids = selectedFiles.filter((f) => sanitizeFolder(f.folder) !== target).map((f) => f.id);
+    if (ids.length === 0) {
+      setBatchMoveOpen(false);
+      toast.success("所选文件已在该目录");
+      return;
+    }
+    setDialogBusy(true);
+    try {
+      const r = await runBatch({ action: "move", ids, folder: target });
+      setSelected(new Set(r.failed.map((f) => f.id)));
+      setBatchMoveOpen(false);
+      reportBatch("移动", r);
+      await loadFiles();
+    } catch (e) {
+      toast.error(errorMessage(e, "批量移动失败"));
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  /** 浏览器会拦截连续弹出的下载，间隔触发 */
+  const batchDownload = async () => {
+    const list = selectedFiles;
+    if (list.length === 0) return;
+    if (list.length === 1) {
+      const { openFileDownload } = await import("@/lib/client-file");
+      openFileDownload(list[0]);
+      return;
+    }
+    const { triggerAttachmentDownload } = await import("@/lib/client-file");
+    toast.success(`开始下载 ${list.length} 个文件，如浏览器询问请允许「下载多个文件」`);
+    for (let i = 0; i < list.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 400));
+      triggerAttachmentDownload(list[i]);
+    }
+  };
+
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
@@ -1106,7 +1292,24 @@ export function DriveApp({
     const icon = (node: React.ReactNode) => node;
 
     if (ctx.target.type === "file") {
+      // 右键已选中的文件且选了多个：给批量菜单
+      if (selected.size > 1 && selected.has(ctx.target.file.id)) {
+        return [
+          { id: "batch-download", label: `下载 ${selected.size} 个文件`, icon: icon(<IconDownload className="h-4 w-4" />) },
+          { id: "batch-move", label: `移动 ${selected.size} 个文件到…`, icon: icon(<IconMove className="h-4 w-4" />) },
+          { id: "sep1", label: "", separator: true },
+          { id: "clear-select", label: "取消选择", icon: icon(<IconClose className="h-4 w-4" />) },
+          { id: "sep2", label: "", separator: true },
+          { id: "batch-delete", label: `删除 ${selected.size} 个文件`, icon: icon(<IconTrash className="h-4 w-4" />), danger: true },
+        ];
+      }
       return [
+        {
+          id: "select",
+          label: selected.has(ctx.target.file.id) ? "取消选择" : "选择",
+          icon: icon(<IconCheck className="h-4 w-4" />),
+        },
+        { id: "sep0", label: "", separator: true },
         { id: "preview", label: "预览", icon: icon(<IconEye className="h-4 w-4" />) },
         { id: "download", label: "下载", icon: icon(<IconDownload className="h-4 w-4" />) },
         { id: "share", label: "分享", icon: icon(<IconShare className="h-4 w-4" />) },
@@ -1139,7 +1342,7 @@ export function DriveApp({
         ? [{ id: "parent", label: "返回上级", icon: icon(<IconHome className="h-4 w-4" />) }]
         : []),
     ];
-  }, [ctx, folder]);
+  }, [ctx, folder, selected]);
 
   const onMenuSelect = (id: string) => {
     if (!ctx) return;
@@ -1183,8 +1386,29 @@ export function DriveApp({
       openDeleteFolder(target.name);
       return;
     }
+    if (id === "batch-download") {
+      void batchDownload();
+      return;
+    }
+    if (id === "batch-move") {
+      openBatchMove();
+      return;
+    }
+    if (id === "batch-delete") {
+      setBatchDeleteOpen(true);
+      return;
+    }
+    if (id === "clear-select") {
+      clearSelection();
+      return;
+    }
     if (target.type !== "file") return;
 
+    if (id === "select") {
+      setSelectMode(true);
+      toggleSelect(target.file.id);
+      return;
+    }
     if (id === "preview") openPreview(target.file);
     if (id === "download") {
       void import("@/lib/client-file").then(({ openFileDownload }) => {
@@ -1196,6 +1420,66 @@ export function DriveApp({
     if (id === "move") openMove(target.file);
     if (id === "delete") openDelete(target.file);
   };
+
+  /** 单个 / 批量移动共用的目标目录选择器 */
+  const renderFolderPicker = (mode: "single" | "batch") => (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-slate-700">选择目标文件夹</span>
+        <button
+          type="button"
+          onClick={() => void loadAllFolders()}
+          className="text-xs text-blue-600 hover:underline"
+          disabled={foldersLoading}
+        >
+          {foldersLoading ? "刷新中…" : "刷新目录"}
+        </button>
+      </div>
+
+      <div className="max-h-56 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2">
+        {foldersLoading && allFolders.length <= 1 ? (
+          <div className="px-2 py-6 text-center text-sm text-slate-500">加载文件夹…</div>
+        ) : (
+          allFolders.map((path) => {
+            const isTarget = sanitizeFolder(moveValue) === sanitizeFolder(path);
+            const depth = path === "/" ? 0 : path.split("/").filter(Boolean).length - 1;
+            const label = path === "/" ? "根目录 /" : path.split("/").filter(Boolean).pop() || path;
+            return (
+              <button
+                key={path}
+                type="button"
+                onClick={() => setMoveValue(path)}
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
+                  isTarget
+                    ? "bg-gradient-to-r from-blue-500 to-teal-400 text-white shadow-md shadow-blue-500/20"
+                    : "bg-white text-slate-700 hover:bg-blue-50"
+                }`}
+                style={{ paddingLeft: `${10 + depth * 14}px` }}
+              >
+                <IconFolder className={`h-4 w-4 shrink-0 ${isTarget ? "text-white" : "text-amber-500"}`} />
+                <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+                <span className={`shrink-0 text-xs ${isTarget ? "text-white/80" : "text-slate-400"}`}>
+                  {path}
+                </span>
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      <DialogInput
+        label="或手动输入路径"
+        value={moveValue}
+        onChange={setMoveValue}
+        placeholder="/ 或 /docs/images"
+        onEnter={() => void (mode === "batch" ? submitBatchMove() : submitMove())}
+      />
+      <p className="text-xs text-slate-500">
+        已选：
+        <span className="ml-1 font-medium text-slate-700">{sanitizeFolder(moveValue || "/")}</span>
+      </p>
+    </div>
+  );
 
   return (
     <div
@@ -1310,6 +1594,23 @@ export function DriveApp({
             </button>
           </div>
 
+          <button
+            type="button"
+            onClick={() => (selectionActive ? clearSelection() : setSelectMode(true))}
+            disabled={!selectionActive && sortedFiles.length === 0}
+            aria-pressed={selectionActive}
+            title={selectionActive ? "退出多选" : "多选文件"}
+            aria-label={selectionActive ? "退出多选" : "多选文件"}
+            className={`box-border inline-flex h-10 min-h-0 shrink-0 items-center justify-center gap-1 rounded-xl border px-2.5 text-xs shadow-sm transition disabled:opacity-40 ${
+              selectionActive
+                ? "border-sky-300 bg-sky-500 text-white"
+                : "border-[var(--border)] bg-white/90 text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <IconCheck className="h-4 w-4" />
+            <span className="hidden sm:inline">{selectionActive ? "完成" : "多选"}</span>
+          </button>
+
           <form
             className="flex min-w-0 flex-1 items-center gap-2"
             onSubmit={(e) => {
@@ -1379,6 +1680,61 @@ export function DriveApp({
       {error && (
         <div className="mb-2 shrink-0 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 sm:mb-4 sm:px-4 sm:py-3 sm:text-sm">
           {error}
+        </div>
+      )}
+
+      {selectionActive && (
+        <div
+          role="toolbar"
+          aria-label="批量操作"
+          className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-2 py-1.5 text-sm text-sky-900 sm:mb-4 sm:gap-2 sm:px-3"
+        >
+          <SelectBox
+            checked={allSelectState === "all"}
+            indeterminate={allSelectState === "some"}
+            onToggle={() => toggleSelectAll()}
+            label={allSelectState === "all" ? "取消全选" : "全选文件"}
+            className="ml-1"
+          />
+          <span className="mr-auto px-1 font-medium">
+            已选 {selected.size} / {sortedFiles.length}
+          </span>
+          <button
+            type="button"
+            onClick={() => void batchDownload()}
+            disabled={selected.size === 0}
+            className="inline-flex min-h-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-sky-200 hover:bg-sky-100 disabled:opacity-40"
+          >
+            <IconDownload className="h-4 w-4" />
+            <span className="hidden sm:inline">下载</span>
+          </button>
+          <button
+            type="button"
+            onClick={openBatchMove}
+            disabled={selected.size === 0}
+            className="inline-flex min-h-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-sky-200 hover:bg-sky-100 disabled:opacity-40"
+          >
+            <IconMove className="h-4 w-4" />
+            <span className="hidden sm:inline">移动</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBatchDeleteOpen(true)}
+            disabled={selected.size === 0}
+            className="inline-flex min-h-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 shadow-sm ring-1 ring-red-200 hover:bg-red-50 disabled:opacity-40"
+          >
+            <IconTrash className="h-4 w-4" />
+            <span className="hidden sm:inline">删除</span>
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="inline-flex min-h-0 items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-sky-700 hover:bg-sky-100"
+            title="取消选择（Esc）"
+          >
+            <IconClose className="h-4 w-4" />
+            <span className="hidden sm:inline">取消</span>
+          </button>
         </div>
       )}
 
@@ -1455,16 +1811,33 @@ export function DriveApp({
                   <div className="px-2.5 pb-2 text-xs text-slate-400 sm:px-3">文件夹</div>
                 </button>
               ))}
-              {sortedFiles.map((file) => (
+              {sortedFiles.map((file) => {
+                const isSel = selected.has(file.id);
+                return (
                 <button
                   key={file.id}
                   type="button"
-                   onClick={() => openPreview(file)}
+                  onClick={(e) => onFileItemClick(e, file)}
                   onContextMenu={(e) => openContext(e, { type: "file", file })}
                   {...bindLongPress({ type: "file", file })}
-                  className="group overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition active:scale-[0.98] hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md"
+                  aria-pressed={selectionActive ? isSel : undefined}
+                  className={`group relative overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition active:scale-[0.98] hover:-translate-y-0.5 hover:shadow-md ${
+                    isSel
+                      ? "border-sky-400 ring-2 ring-sky-400/70"
+                      : "border-slate-200 hover:border-sky-300"
+                  }`}
                   title={file.name}
                 >
+                  <SelectMark
+                    checked={isSel}
+                    overlay
+                    className={`absolute left-2 top-2 z-[2] transition-opacity ${
+                      selectionActive ? "" : "opacity-0 group-hover:opacity-100 [@media(hover:none)]:hidden"
+                    }`}
+                  />
+                  {isSel && (
+                    <span aria-hidden className="pointer-events-none absolute inset-0 z-[1] bg-sky-500/10" />
+                  )}
                   <ThumbImage
                     id={file.id}
                     kind={file.kind}
@@ -1477,7 +1850,8 @@ export function DriveApp({
                     <span className="hidden sm:inline">{kindLabel(file.kind)}</span>
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -1527,11 +1901,14 @@ export function DriveApp({
               {sortedFiles.map((file) => (
                 <div
                   key={`m-file-${file.id}`}
-                  className="flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50"
-                  onClick={() => openPreview(file)}
+                  className={`flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50 ${
+                    selected.has(file.id) ? "bg-sky-50" : ""
+                  }`}
+                  onClick={(e) => onFileItemClick(e, file)}
                   onContextMenu={(e) => openContext(e, { type: "file", file })}
                   {...bindLongPress({ type: "file", file })}
                 >
+                  {selectionActive && <SelectMark checked={selected.has(file.id)} />}
                   {file.kind === "image" ? (
                     <ThumbImage
                       id={file.id}
@@ -1552,7 +1929,9 @@ export function DriveApp({
                   </div>
                   <button
                     type="button"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 active:bg-slate-100"
+                    className={`h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 active:bg-slate-100 ${
+                      selectionActive ? "hidden" : "flex"
+                    }`}
                     onClick={(e) => {
                       e.stopPropagation();
                       openContext(
@@ -1582,6 +1961,16 @@ export function DriveApp({
               <table className="w-full min-w-[640px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-gradient-to-r from-white/60 to-[var(--panel-2)]/80 text-xs uppercase tracking-wide text-[var(--muted)]">
+                    <th className="w-10 py-3 pl-4 pr-0">
+                      {sortedFiles.length > 0 && (
+                        <SelectBox
+                          checked={allSelectState === "all"}
+                          indeterminate={allSelectState === "some"}
+                          onToggle={() => toggleSelectAll()}
+                          label={allSelectState === "all" ? "取消全选" : "全选文件"}
+                        />
+                      )}
+                    </th>
                     <th className="px-4 py-3 font-medium">
                       <button
                         type="button"
@@ -1637,6 +2026,7 @@ export function DriveApp({
                       onContextMenu={(e) => openContext(e, { type: "folder", name })}
                       onDoubleClick={() => setFolder(joinFolder(folder, name))}
                     >
+                      <td className="w-10 py-3 pl-4 pr-0" />
                       <td className="px-4 py-3">
                         <button
                           onClick={() => setFolder(joinFolder(folder, name))}
@@ -1655,13 +2045,22 @@ export function DriveApp({
                   {sortedFiles.map((file) => (
                     <tr
                       key={file.id}
-                      className="border-b border-[var(--border)]/70 hover:bg-blue-50/60"
+                      className={`border-b border-[var(--border)]/70 ${
+                        selected.has(file.id) ? "bg-sky-50 hover:bg-sky-100/70" : "hover:bg-blue-50/60"
+                      }`}
                       onContextMenu={(e) => openContext(e, { type: "file", file })}
-                      onDoubleClick={() => openPreview(file)}
+                      onDoubleClick={() => !selectionActive && openPreview(file)}
                     >
+                      <td className="w-10 py-3 pl-4 pr-0">
+                        <SelectBox
+                          checked={selected.has(file.id)}
+                          onToggle={(shift) => toggleSelect(file.id, shift)}
+                          label={`选择 ${file.name}`}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => openPreview(file)}
+                          onClick={(e) => onFileItemClick(e, file)}
                           className="inline-flex max-w-xs items-center gap-2 truncate text-left hover:text-[var(--accent)] sm:max-w-md"
                           title={file.name}
                         >
@@ -2356,62 +2755,60 @@ export function DriveApp({
           </>
         }
       >
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-700">选择目标文件夹</span>
-            <button
-              type="button"
-              onClick={() => void loadAllFolders()}
-              className="text-xs text-blue-600 hover:underline"
-              disabled={foldersLoading}
+        {renderFolderPicker("single")}
+      </Dialog>
+
+      <Dialog
+        open={batchMoveOpen}
+        title={`移动 ${selected.size} 个文件到…`}
+        description={`当前位置 ${folder}`}
+        onClose={() => !dialogBusy && setBatchMoveOpen(false)}
+        wide
+        footer={
+          <>
+            <BtnGhost onClick={() => setBatchMoveOpen(false)}>取消</BtnGhost>
+            <BtnPrimary onClick={() => void submitBatchMove()} disabled={dialogBusy || !moveValue.trim()}>
+              {dialogBusy ? "移动中…" : "移动到此处"}
+            </BtnPrimary>
+          </>
+        }
+      >
+        {renderFolderPicker("batch")}
+      </Dialog>
+
+      <Dialog
+        open={batchDeleteOpen}
+        title="确认批量删除"
+        description={
+          selectedFiles.length > 0
+            ? `确定删除选中的 ${selectedFiles.length} 个文件？会在 Notion 中归档这些页面。`
+            : undefined
+        }
+        onClose={() => !dialogBusy && setBatchDeleteOpen(false)}
+        footer={
+          <>
+            <BtnGhost onClick={() => setBatchDeleteOpen(false)}>取消</BtnGhost>
+            <BtnPrimary
+              danger
+              onClick={() => void submitBatchDelete()}
+              disabled={dialogBusy || selectedFiles.length === 0}
             >
-              {foldersLoading ? "刷新中…" : "刷新目录"}
-            </button>
-          </div>
-
-          <div className="max-h-56 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2">
-            {foldersLoading && allFolders.length <= 1 ? (
-              <div className="px-2 py-6 text-center text-sm text-slate-500">加载文件夹…</div>
-            ) : (
-              allFolders.map((path) => {
-                const selected = sanitizeFolder(moveValue) === sanitizeFolder(path);
-                const depth = path === "/" ? 0 : path.split("/").filter(Boolean).length - 1;
-                const label = path === "/" ? "根目录 /" : path.split("/").filter(Boolean).pop() || path;
-                return (
-                  <button
-                    key={path}
-                    type="button"
-                    onClick={() => setMoveValue(path)}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
-                      selected
-                        ? "bg-gradient-to-r from-blue-500 to-teal-400 text-white shadow-md shadow-blue-500/20"
-                        : "bg-white text-slate-700 hover:bg-blue-50"
-                    }`}
-                    style={{ paddingLeft: `${10 + depth * 14}px` }}
-                  >
-                    <IconFolder className={`h-4 w-4 shrink-0 ${selected ? "text-white" : "text-amber-500"}`} />
-                    <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-                    <span className={`shrink-0 text-xs ${selected ? "text-white/80" : "text-slate-400"}`}>
-                      {path}
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          <DialogInput
-            label="或手动输入路径"
-            value={moveValue}
-            onChange={setMoveValue}
-            placeholder="/ 或 /docs/images"
-            onEnter={() => void submitMove()}
-          />
-          <p className="text-xs text-slate-500">
-            已选：
-            <span className="ml-1 font-medium text-slate-700">{sanitizeFolder(moveValue || "/")}</span>
-          </p>
-        </div>
+              {dialogBusy ? "删除中…" : `删除 ${selectedFiles.length} 个`}
+            </BtnPrimary>
+          </>
+        }
+      >
+        <ul className="max-h-48 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2 text-sm text-slate-700">
+          {selectedFiles.slice(0, 50).map((f) => (
+            <li key={f.id} className="flex items-center gap-2 truncate">
+              <FileIcon kind={f.kind} name={f.name} className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+              <span className="truncate">{f.name}</span>
+            </li>
+          ))}
+          {selectedFiles.length > 50 && (
+            <li className="text-xs text-slate-400">…以及另外 {selectedFiles.length - 50} 个</li>
+          )}
+        </ul>
       </Dialog>
 
       <Dialog
@@ -2479,5 +2876,90 @@ export function DriveApp({
 
       <ShareDialog key={shareDialog?.id ?? "none"} file={shareDialog} onClose={() => setShareDialog(null)} />
     </div>
+  );
+}
+
+/** 勾选框外观：圆角方框，选中用主题渐变 + 勾号缩放动画 */
+function CheckVisual({
+  checked,
+  indeterminate = false,
+  overlay = false,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  /** 叠在缩略图上：未选中时白底 + 阴影，保证在任何图片上都看得清 */
+  overlay?: boolean;
+}) {
+  const on = checked || indeterminate;
+  return (
+    <span
+      aria-hidden
+      className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-all duration-150 ${
+        on
+          ? "border-transparent bg-gradient-to-br from-sky-500 to-teal-400 text-white shadow-sm shadow-sky-500/30"
+          : overlay
+            ? "border-white/90 bg-white/80 text-transparent shadow-md backdrop-blur-sm group-hover:border-sky-400"
+            : "border-slate-300 bg-white text-transparent group-hover/check:border-sky-400 group-hover/check:bg-sky-50"
+      }`}
+    >
+      {indeterminate ? (
+        <span className="h-[2px] w-2 rounded-full bg-white" />
+      ) : (
+        <IconCheck
+          className={`h-3 w-3 transition-transform duration-150 ${checked ? "scale-100" : "scale-50"}`}
+        />
+      )}
+    </span>
+  );
+}
+
+/** 卡片内的纯展示勾选标记（卡片本身是按钮，不能再嵌套按钮；点击由卡片处理） */
+function SelectMark({
+  checked,
+  overlay = false,
+  className = "",
+}: {
+  checked: boolean;
+  overlay?: boolean;
+  className?: string;
+}) {
+  return (
+    <span className={`inline-flex ${className}`}>
+      <CheckVisual checked={checked} overlay={overlay} />
+    </span>
+  );
+}
+
+/** 可点击勾选框：外层留出点击热区，点击不冒泡到行（避免触发预览） */
+function SelectBox({
+  checked,
+  indeterminate = false,
+  onToggle,
+  label,
+  className = "",
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  onToggle: (shift: boolean) => void;
+  label: string;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={indeterminate ? "mixed" : checked}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onTouchStart={(e) => e.stopPropagation()}
+      className={`group/check -m-1.5 inline-flex min-h-0 items-center justify-center rounded-lg p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${className}`}
+    >
+      <CheckVisual checked={checked} indeterminate={indeterminate} />
+    </button>
   );
 }
