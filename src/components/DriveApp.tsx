@@ -2003,8 +2003,8 @@ export function DriveApp({
             {/* 桌面：表格 */}
             <div className="hidden overflow-x-auto sm:block">
               <table className="w-full min-w-[640px] text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] bg-gradient-to-r from-white/60 to-[var(--panel-2)]/80 text-xs uppercase tracking-wide text-[var(--muted)]">
+                <thead className="sticky top-0 z-10">
+                  <tr className="border-b border-[var(--border)] bg-gradient-to-r from-white/95 to-[var(--panel-2)]/95 text-xs uppercase tracking-wide text-[var(--muted)] backdrop-blur-sm">
                     <th className="w-10 py-3 pl-4 pr-0">
                       {sortedFiles.length > 0 && (
                         <SelectBox
