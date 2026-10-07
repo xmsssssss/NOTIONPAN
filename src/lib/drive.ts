@@ -1626,7 +1626,7 @@ export async function renameFolder(folderPath: string, newName: string): Promise
   // 检查目标路径是否已存在
   const { listIndexSubfolders } = await import("./db");
   const siblings = listIndexSubfolders(parent);
-  if (siblings.includes(newPath)) {
+  if (siblings.includes(nextName)) {
     throw new Error(`目标目录已存在「${nextName}」`);
   }
 
