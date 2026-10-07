@@ -64,6 +64,28 @@ export function nextSort(cur: { key: SortKey; dir: SortDir }, key: SortKey): { k
   return { key, dir: key === "name" || key === "kind" ? "asc" : "desc" };
 }
 
+// ---------- 分批渲染 ----------
+
+/** 每批渲染条数（文件夹 + 文件合计） */
+export const RENDER_PAGE_SIZE = 100;
+
+/**
+ * 按「文件夹在前、文件在后」的显示顺序截取前 limit 项。
+ * 数据已全部在本地索引里，这里只控制渲染量，排序/选择/播放列表仍基于完整列表。
+ */
+export function pageSlice<F, T>(
+  folders: readonly F[],
+  files: readonly T[],
+  limit: number,
+): { folders: F[]; files: T[]; shown: number; total: number; hasMore: boolean } {
+  const n = Math.max(0, Math.floor(limit));
+  const total = folders.length + files.length;
+  const vf = folders.slice(0, n);
+  const vfiles = files.slice(0, Math.max(0, n - vf.length));
+  const shown = vf.length + vfiles.length;
+  return { folders: vf, files: vfiles, shown, total, hasMore: shown < total };
+}
+
 // ---------- 多选 ----------
 
 /**

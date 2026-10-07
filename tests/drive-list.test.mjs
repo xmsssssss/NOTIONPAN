@@ -5,6 +5,7 @@ import {
   isSortDir,
   isSortKey,
   nextSort,
+  pageSlice,
   pruneSelection,
   selectionState,
   sortFiles,
@@ -108,6 +109,33 @@ test("selectionState", () => {
   assert.equal(selectionState(new Set(["a"]), ids), "some");
   assert.equal(selectionState(new Set(ids), ids), "all");
   assert.equal(selectionState(new Set(["a"]), []), "none");
+});
+
+test("pageSlice：文件夹优先占用名额", () => {
+  const r = pageSlice(["f1", "f2", "f3"], ["a", "b", "c"], 2);
+  assert.deepEqual(r.folders, ["f1", "f2"]);
+  assert.deepEqual(r.files, []);
+  assert.equal(r.shown, 2);
+  assert.equal(r.total, 6);
+  assert.equal(r.hasMore, true);
+});
+
+test("pageSlice：跨越文件夹与文件边界", () => {
+  const r = pageSlice(["f1"], ["a", "b", "c"], 3);
+  assert.deepEqual(r.folders, ["f1"]);
+  assert.deepEqual(r.files, ["a", "b"]);
+  assert.equal(r.hasMore, true);
+});
+
+test("pageSlice：limit 超出总数 / 非法值", () => {
+  const all = pageSlice(["f1"], ["a"], 100);
+  assert.equal(all.shown, 2);
+  assert.equal(all.hasMore, false);
+  const none = pageSlice(["f1"], ["a"], -5);
+  assert.equal(none.shown, 0);
+  assert.equal(none.hasMore, true);
+  const empty = pageSlice([], [], 10);
+  assert.equal(empty.hasMore, false);
 });
 
 test("buildCrumbs", () => {

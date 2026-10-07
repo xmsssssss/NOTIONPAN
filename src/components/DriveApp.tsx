@@ -10,7 +10,9 @@ import {
   isSortDir,
   isSortKey,
   nextSort,
+  pageSlice,
   pruneSelection,
+  RENDER_PAGE_SIZE,
   selectionState,
   sortFiles,
   sortFolders,
@@ -300,14 +302,32 @@ export function DriveApp({
   );
 
   const sortedFileIds = useMemo(() => sortedFiles.map((f) => f.id), [sortedFiles]);
-  // 切目录 / 搜索时清空选择：渲染期按 key 调整 state（React 推荐写法，免一次多余渲染）
+  // 切目录 / 搜索时清空选择、重置分批：渲染期按 key 调整 state（React 推荐写法，免一次多余渲染）
   const selectScopeKey = `${folder}\n${search}`;
   const [selectScope, setSelectScope] = useState(selectScopeKey);
+  const [renderLimit, setRenderLimit] = useState(RENDER_PAGE_SIZE);
   if (selectScope !== selectScopeKey) {
     setSelectScope(selectScopeKey);
     setSelected(new Set());
     setSelectMode(false);
+    setRenderLimit(RENDER_PAGE_SIZE);
   }
+  // 换排序时回到第一批，避免一次渲染出大量原本未显示的项
+  const sortScopeKey = `${sortKey}:${sortDir}`;
+  const [sortScope, setSortScope] = useState(sortScopeKey);
+  if (sortScope !== sortScopeKey) {
+    setSortScope(sortScopeKey);
+    setRenderLimit(RENDER_PAGE_SIZE);
+  }
+  const page = useMemo(
+    () => pageSlice(sortedFolders, sortedFiles, renderLimit),
+    [sortedFolders, sortedFiles, renderLimit],
+  );
+  const visibleFolders = page.folders;
+  const visibleFiles = page.files;
+  const loadMore = useCallback(() => setRenderLimit((n) => n + RENDER_PAGE_SIZE), []);
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const showAll = useCallback(() => setRenderLimit(Number.MAX_SAFE_INTEGER), []);
   // 列表变化（删除、移走、刷新）后只保留仍存在的项：派生而非同步
   const selected = useMemo(
     () => pruneSelection(rawSelected, sortedFileIds),
@@ -1750,7 +1770,7 @@ export function DriveApp({
           dragOver ? "ring-2 ring-[var(--accent)] ring-offset-2" : ""
         }`}
       >
-<div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
+<div ref={listScrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
         {/* 手机无表格表头：粘性排序栏 */}
         {!loading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
           <div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/95 px-2 py-1 text-[11px] text-slate-500 backdrop-blur-sm sm:hidden">
@@ -1795,7 +1815,7 @@ export function DriveApp({
         ) : viewMode === "gallery" ? (
           <div className="p-2.5 sm:p-4">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5">
-              {sortedFolders.map((name) => (
+              {visibleFolders.map((name) => (
                 <button
                   key={`folder-${name}`}
                   type="button"
@@ -1811,7 +1831,7 @@ export function DriveApp({
                   <div className="px-2.5 pb-2 text-xs text-slate-400 sm:px-3">文件夹</div>
                 </button>
               ))}
-              {sortedFiles.map((file) => {
+              {visibleFiles.map((file) => {
                 const isSel = selected.has(file.id);
                 return (
                 <button
@@ -1858,7 +1878,7 @@ export function DriveApp({
           <>
             {/* 手机：卡片列表 */}
             <div className="divide-y divide-slate-100 sm:hidden">
-              {sortedFolders.map((name) => (
+              {visibleFolders.map((name) => (
                 <div
                   key={`m-folder-${name}`}
                   className="flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50"
@@ -1898,7 +1918,7 @@ export function DriveApp({
                   </button>
                 </div>
               ))}
-              {sortedFiles.map((file) => (
+              {visibleFiles.map((file) => (
                 <div
                   key={`m-file-${file.id}`}
                   className={`flex items-center gap-2.5 px-3 py-2.5 active:bg-slate-50 ${
@@ -2019,7 +2039,7 @@ export function DriveApp({
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedFolders.map((name) => (
+                  {visibleFolders.map((name) => (
                     <tr
                       key={`folder-${name}`}
                       className="border-b border-[var(--border)]/70 hover:bg-blue-50/60"
@@ -2042,7 +2062,7 @@ export function DriveApp({
                       <td className="px-4 py-3" />
                     </tr>
                   ))}
-                  {sortedFiles.map((file) => (
+                  {visibleFiles.map((file) => (
                     <tr
                       key={file.id}
                       className={`border-b border-[var(--border)]/70 ${
@@ -2112,6 +2132,16 @@ export function DriveApp({
               </table>
             </div>
           </>
+        )}
+        {!loading && page.total > 0 && (
+          <LoadMoreFooter
+            shown={page.shown}
+            total={page.total}
+            hasMore={page.hasMore}
+            onLoadMore={loadMore}
+            onShowAll={showAll}
+            scrollRoot={listScrollRef}
+          />
         )}
         </div>
       </div>
@@ -2875,6 +2905,77 @@ export function DriveApp({
       />
 
       <ShareDialog key={shareDialog?.id ?? "none"} file={shareDialog} onClose={() => setShareDialog(null)} />
+    </div>
+  );
+}
+
+/**
+ * 列表底部：滚到附近自动追加下一批（IntersectionObserver），同时保留按钮兜底
+ * （不支持 IO、或容器不够高无法滚动时也能加载）。
+ */
+function LoadMoreFooter({
+  shown,
+  total,
+  hasMore,
+  onLoadMore,
+  onShowAll,
+  scrollRoot,
+}: {
+  shown: number;
+  total: number;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  onShowAll: () => void;
+  /** 列表的滚动容器；rootMargin 只有在以它为 root 时才能提前触发 */
+  scrollRoot: React.RefObject<HTMLDivElement | null>;
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!hasMore || !el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onLoadMoreRef.current();
+      },
+      { root: scrollRoot.current, rootMargin: "0px 0px 400px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // shown 变化后重新观察：若追加后哨兵仍在可视区（内容不够高），会再次触发
+  }, [hasMore, shown, scrollRoot]);
+
+  if (!hasMore) {
+    // 少量时不显示，免得多一行噪音
+    if (total <= RENDER_PAGE_SIZE) return null;
+    return (
+      <div className="px-4 py-3 text-center text-xs text-slate-400">已显示全部 {total} 项</div>
+    );
+  }
+
+  return (
+    <div ref={sentinelRef} className="flex flex-wrap items-center justify-center gap-2 px-4 py-3 text-xs text-slate-500">
+      <span>
+        已显示 {shown} / {total} 项
+      </span>
+      <button
+        type="button"
+        onClick={onLoadMore}
+        className="min-h-0 rounded-lg bg-white px-3 py-1.5 font-medium text-sky-700 shadow-sm ring-1 ring-sky-200 hover:bg-sky-50"
+      >
+        加载更多
+      </button>
+      <button
+        type="button"
+        onClick={onShowAll}
+        className="min-h-0 rounded-lg px-2 py-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+      >
+        全部显示
+      </button>
     </div>
   );
 }
