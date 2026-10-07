@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
-import { deleteFolder, renameFolder } from "@/lib/drive";
+import { createFolder, deleteFolder, renameFolder } from "@/lib/drive";
 import { listIndexFilesUnder } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+export async function POST(req: NextRequest) {
+  return withAuth(async () => {
+    const body = await req.json();
+    const name = String(body.name || "").trim();
+    const parent = String(body.parent || "/");
+    if (!name) {
+      return NextResponse.json({ error: "缺少文件夹名" }, { status: 400 });
+    }
+    const result = await createFolder(parent, name);
+    return NextResponse.json(result);
+  });
+}
 
 export async function GET(req: NextRequest) {
   return withAuth(async () => {
