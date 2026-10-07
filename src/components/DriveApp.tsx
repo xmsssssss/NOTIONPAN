@@ -7,10 +7,10 @@ import { useUrlState } from "@/lib/use-url-state";
 import { useViewPrefs, type ViewMode } from "@/lib/use-view-prefs";
 import { errorMessage, toast } from "@/lib/toast";
 import {
-  consumeBatchResponse,
+  runBatchChunked,
   type BatchAction,
+  type BatchOutcome,
   type BatchProgress,
-  type BatchResult,
 } from "@/lib/batch";
 import {
   buildCrumbs,
@@ -97,6 +97,9 @@ type UploadTask = {
   kind?: "file" | "url";
   importUrl?: string;
 };
+
+/** 批量下载上限：逐个触发浏览器下载并经本机反代，过多会占满连接 */
+const MAX_BATCH_DOWNLOAD = 20;
 
 async function fetchHealth(): Promise<Health> {
   try {
@@ -343,6 +346,13 @@ export function DriveApp({
     [sortedFiles, selected],
   );
   const allSelectState = selectionState(selected, sortedFileIds);
+  /** 已选但因分批渲染还没显示出来的文件数（全选 / Ctrl+A 会包含它们） */
+  const hiddenSelectedCount = useMemo(() => {
+    if (selected.size === 0) return 0;
+    let shown = 0;
+    for (const f of visibleFiles) if (selected.has(f.id)) shown++;
+    return selected.size - shown;
+  }, [selected, visibleFiles]);
 
   const clearSelection = useCallback(() => {
     setSelected(new Set());
@@ -945,9 +955,12 @@ export function DriveApp({
     // 先查询子文件数量
     try {
       const res = await fetch(`/api/folders?folder=${encodeURIComponent(folderPath)}`);
-      const data = await res.json();
-      const count = typeof data.count === "number" ? data.count : 0;
-      setDeleteFolderCount(count);
+      const data = await res.json().catch(() => ({}));
+      // 查不到数量时不能当成空文件夹：删除会连同子文件一起删掉
+      if (!res.ok || typeof data.count !== "number") {
+        throw new Error(data.error || `获取文件夹信息失败 (${res.status})`);
+      }
+      setDeleteFolderCount(data.count);
       setDeleteFolderDialog(folderName);
     } catch (e) {
       toast.error(errorMessage(e, "获取文件夹信息失败"));
@@ -1045,6 +1058,13 @@ export function DriveApp({
       if (!res.ok) throw new Error(data.error || "移动失败");
       if (sanitizeFolder(data.file.folder) !== sanitizeFolder(folder)) {
         setFiles((prev) => prev.filter((f) => f.id !== moveDialog.id));
+        // 移走的文件不保留勾选，免得以后移回来时又自动选中
+        setSelected((prev) => {
+          if (!prev.has(moveDialog.id)) return prev;
+          const next = new Set(prev);
+          next.delete(moveDialog.id);
+          return next;
+        });
       } else {
         setFiles((prev) => prev.map((f) => (f.id === moveDialog.id ? data.file : f)));
       }
@@ -1137,29 +1157,27 @@ export function DriveApp({
 
   // ---------- 批量操作 ----------
 
+  /** 服务端单次上限 200：超出时由 runBatchChunked 分组依次请求 */
   const runBatch = async (body: {
     action: BatchAction;
     ids: string[];
     folder?: string;
-  }): Promise<BatchResult & { interrupted: boolean }> => {
+  }): Promise<BatchOutcome> => {
     const ac = new AbortController();
     batchAbortRef.current = ac;
     setBatchProgress({ done: 0, total: body.ids.length });
     try {
-      let res: Response;
-      try {
-        res = await fetch("/api/files/batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: ac.signal,
-        });
-      } catch (e) {
-        // 响应头到达前就点了停止：服务端可能已处理了一部分，按「中途停止」处理并以刷新结果为准
-        if (ac.signal.aborted) return { succeeded: [], failed: [], files: [], interrupted: true };
-        throw e;
-      }
-      return await consumeBatchResponse(res, setBatchProgress);
+      return await runBatchChunked(
+        (ids, signal) =>
+          fetch("/api/files/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, ids }),
+            signal,
+          }),
+        body.ids,
+        { onProgress: setBatchProgress, signal: ac.signal },
+      );
     } finally {
       batchAbortRef.current = null;
       setBatchProgress(null);
@@ -1168,12 +1186,24 @@ export function DriveApp({
 
   const stopBatch = () => batchAbortRef.current?.abort();
 
-  /** 汇总提示：全部成功 / 部分失败（展示第一条原因）/ 中途停止 */
-  const reportBatch = (verb: string, r: BatchResult & { interrupted: boolean }, total: number) => {
+  // 批量执行中关闭/刷新页面会中断剩余项：提醒一下
+  const batchRunning = batchProgress !== null;
+  useEffect(() => {
+    if (!batchRunning) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [batchRunning]);
+
+  /** 汇总提示：全部成功 / 部分失败（展示第一条原因）/ 中途停止 / 异常中断 */
+  const reportBatch = (verb: string, r: BatchOutcome, total: number) => {
     if (r.interrupted) {
       const rest = total - r.succeeded.length - r.failed.length;
       toast.error(
-        `已停止：${verb}了 ${r.succeeded.length} 个` +
+        (r.error ? `${verb}中断（${r.error}）：已${verb} ${r.succeeded.length} 个` : `已停止：${verb}了 ${r.succeeded.length} 个`) +
           (r.failed.length ? `，${r.failed.length} 个失败` : "") +
           (rest > 0 ? `，${rest} 个未处理` : ""),
       );
@@ -1247,16 +1277,20 @@ export function DriveApp({
     }
   };
 
-  /** 浏览器会拦截连续弹出的下载，间隔触发 */
+  /** 浏览器会拦截连续弹出的下载，间隔触发；每个都走本机反代，限制数量 */
   const batchDownload = async () => {
     const list = selectedFiles;
     if (list.length === 0) return;
-    if (list.length === 1) {
-      const { openFileDownload } = await import("@/lib/client-file");
-      openFileDownload(list[0]);
+    if (list.length > MAX_BATCH_DOWNLOAD) {
+      toast.error(`一次最多下载 ${MAX_BATCH_DOWNLOAD} 个文件，当前选了 ${list.length} 个`);
       return;
     }
     const { triggerAttachmentDownload } = await import("@/lib/client-file");
+    if (list.length === 1) {
+      // 与多选一致：作为附件下载，不在当前页打开
+      triggerAttachmentDownload(list[0]);
+      return;
+    }
     toast.success(`开始下载 ${list.length} 个文件，如浏览器询问请允许「下载多个文件」`);
     for (let i = 0; i < list.length; i++) {
       if (i > 0) await new Promise((r) => setTimeout(r, 400));
@@ -2806,7 +2840,8 @@ export function DriveApp({
         title="确认批量删除"
         description={
           selectedFiles.length > 0
-            ? `确定删除选中的 ${selectedFiles.length} 个文件？会在 Notion 中归档这些页面。`
+            ? `确定删除选中的 ${selectedFiles.length} 个文件？会在 Notion 中归档这些页面。` +
+              (hiddenSelectedCount > 0 ? `其中 ${hiddenSelectedCount} 个在列表中尚未显示。` : "")
             : undefined
         }
         onClose={() => !dialogBusy && setBatchDeleteOpen(false)}

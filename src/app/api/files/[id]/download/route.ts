@@ -128,8 +128,10 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       );
       headers.set("Cache-Control", "private, max-age=120");
       headers.set("X-Content-Type-Options", "nosniff");
+      // fetch 会自动解压 gzip/br，此时上游长度是压缩后的，透传会导致下载被截断
       const len = upstream.headers.get("content-length");
-      if (len) headers.set("Content-Length", len);
+      const encoded = (upstream.headers.get("content-encoding") || "identity").toLowerCase() !== "identity";
+      if (len && !encoded) headers.set("Content-Length", len);
 
       return new NextResponse(upstream.body, { status: 200, headers });
     } catch (err) {

@@ -413,6 +413,24 @@ function sortByCreatedDesc(a: IndexRow, b: IndexRow) {
   return (b.created_time || "").localeCompare(a.created_time || "");
 }
 
+/** 索引中该 id 是否为 .folder 占位记录（不在索引中返回 false） */
+export function isIndexFolderMarkerId(id: string): boolean {
+  const bare = bareNotionId(id);
+  if (ensureBackend() === "sqlite") {
+    const row = (
+      bare
+        ? sqliteDb!
+            .prepare(`SELECT is_folder_marker FROM files WHERE lower(replace(id, '-', '')) = ? LIMIT 1`)
+            .get(bare)
+        : sqliteDb!.prepare(`SELECT is_folder_marker FROM files WHERE id = ? LIMIT 1`).get(id)
+    ) as { is_folder_marker: number } | undefined;
+    return row?.is_folder_marker === 1;
+  }
+  const store = loadJsonStore();
+  const hit = store.files.find((r) => (bare ? bareNotionId(r.id) === bare : r.id === id));
+  return hit?.is_folder_marker === 1;
+}
+
 /** 某逻辑路径的 .folder 占位页 */
 export function findFolderMarker(folderPath: string): DriveFile | null {
   const f = folderPath;

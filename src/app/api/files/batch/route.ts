@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth-guard";
 import { deleteFile, moveFile } from "@/lib/drive";
-import type { BatchEvent, BatchFailure } from "@/lib/batch";
+import { isIndexFolderMarkerId } from "@/lib/db";
+import { MAX_BATCH, type BatchEvent, type BatchFailure } from "@/lib/batch";
 import type { DriveFile } from "@/lib/types";
+import { bareNotionId } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** 单次批量上限，避免一个请求跑太久 */
-const MAX_BATCH = 200;
 
 /**
  * 批量操作文件（不含文件夹）。逐个串行执行，Notion 限流由 withNotionRetry 兜底。
@@ -29,9 +28,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "action 需为 delete 或 move" }, { status: 400 });
     }
 
-    const ids = Array.isArray(body.ids)
-      ? Array.from(new Set(body.ids.filter((x): x is string => typeof x === "string" && x.trim() !== "")))
-      : [];
+    // 按规范化 id 去重（带/不带连字符视为同一页），保留首次出现的原始写法，便于客户端对照结果
+    const ids: string[] = [];
+    if (Array.isArray(body.ids)) {
+      const seen = new Set<string>();
+      for (const x of body.ids) {
+        if (typeof x !== "string" || x.trim() === "") continue;
+        const key = bareNotionId(x.trim());
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ids.push(x.trim());
+      }
+    }
     if (ids.length === 0) {
       return NextResponse.json({ error: "需要 ids" }, { status: 400 });
     }
@@ -75,6 +83,8 @@ export async function POST(req: NextRequest) {
           for (const id of ids) {
             if (signal.aborted || closed) break;
             try {
+              // 文件夹占位记录只能走文件夹接口，否则会弄乱目录结构
+              if (isIndexFolderMarkerId(id)) throw new Error("不能批量操作文件夹，请使用文件夹菜单");
               let file: DriveFile | undefined;
               if (action === "delete") {
                 await deleteFile(id);
@@ -112,6 +122,8 @@ export async function POST(req: NextRequest) {
       headers: {
         "Content-Type": "application/x-ndjson; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
+        // Nginx 默认缓冲代理响应，会让进度一次性到达
+        "X-Accel-Buffering": "no",
         "X-Content-Type-Options": "nosniff",
       },
     });
