@@ -433,38 +433,46 @@ export function findFolderMarker(folderPath: string): DriveFile | null {
   return hit ? rowToDriveFile(hit) : null;
 }
 
-/** 某路径及其子路径下全部文件（不含 folder marker） */
-export function listIndexFilesUnder(folderPath: string): DriveFile[] {
+/** 某路径及其子路径下全部文件（默认不含 folder marker；includeMarkers 时包含 .folder 占位记录） */
+export function listIndexFilesUnder(
+  folderPath: string,
+  options?: { includeMarkers?: boolean },
+): DriveFile[] {
   const f = folderPath === "/" ? "/" : folderPath;
+  const includeMarkers = Boolean(options?.includeMarkers);
+  const isUnder = (folder: string) =>
+    f === "/" || folder === f || folder.startsWith(`${f}/`);
+
   if (ensureBackend() === "sqlite") {
+    const markerCond = includeMarkers ? "1 = 1" : "is_folder_marker = 0";
     if (f === "/") {
       return (
         sqliteDb!
-          .prepare(
-            `SELECT * FROM files WHERE is_folder_marker = 0 ORDER BY folder, name`,
-          )
+          .prepare(`SELECT * FROM files WHERE ${markerCond} ORDER BY folder, name`)
           .all() as IndexRow[]
       ).map(rowToDriveFile);
     }
+    // LIKE 只做粗筛（文件夹名中的 % / _ 会被当通配符），再用前缀精确过滤
     return (
       sqliteDb!
         .prepare(
           `
           SELECT * FROM files
-          WHERE is_folder_marker = 0
+          WHERE ${markerCond}
             AND (folder = ? OR folder LIKE ?)
           ORDER BY folder, name
         `,
         )
         .all(f, `${f}/%`) as IndexRow[]
-    ).map(rowToDriveFile);
+    )
+      .filter((r) => isUnder(r.folder))
+      .map(rowToDriveFile);
   }
   const store = loadJsonStore();
   return store.files
     .filter((r) => {
-      if (r.is_folder_marker !== 0) return false;
-      if (f === "/") return true;
-      return r.folder === f || r.folder.startsWith(`${f}/`);
+      if (!includeMarkers && r.is_folder_marker !== 0) return false;
+      return isUnder(r.folder);
     })
     .map(rowToDriveFile);
 }

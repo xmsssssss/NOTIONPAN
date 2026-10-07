@@ -1630,42 +1630,43 @@ export async function renameFolder(folderPath: string, newName: string): Promise
     throw new Error(`目标目录已存在「${nextName}」`);
   }
 
-  // 批量更新所有子文件的 folder 字段
+  // 子文件 + 所有 .folder 占位记录（含子文件夹的），否则旧路径会残留
   const { listIndexFilesUnder } = await import("./db");
-  const children = listIndexFilesUnder(oldPath);
+  const children = listIndexFilesUnder(oldPath, { includeMarkers: true });
   if (children.length === 0) return;
 
   const notion = getNotionClient();
   const updatedFiles: DriveFile[] = [];
-  
-  for (const child of children) {
-    const oldChildFolder = child.folder;
-    let newChildFolder: string;
-    if (oldChildFolder === oldPath) {
-      newChildFolder = newPath;
-    } else if (oldChildFolder.startsWith(`${oldPath}/`)) {
-      newChildFolder = newPath + oldChildFolder.slice(oldPath.length);
-    } else {
-      continue;
+
+  try {
+    for (const child of children) {
+      const oldChildFolder = child.folder;
+      let newChildFolder: string;
+      if (oldChildFolder === oldPath) {
+        newChildFolder = newPath;
+      } else if (oldChildFolder.startsWith(`${oldPath}/`)) {
+        newChildFolder = newPath + oldChildFolder.slice(oldPath.length);
+      } else {
+        continue;
+      }
+
+      await withNotionRetry(
+        () =>
+          notion.pages.update({
+            page_id: child.id,
+            properties: {
+              Folder: { rich_text: richText(newChildFolder) },
+            },
+          }),
+        "重命名文件夹",
+      );
+      updatedFiles.push({ ...child, folder: newChildFolder });
     }
-
-    await withNotionRetry(
-      () =>
-        notion.pages.update({
-          page_id: child.id,
-          properties: {
-            Folder: { rich_text: richText(newChildFolder) },
-          },
-        }),
-      "重命名文件夹",
-    );
-    const updated = await getFile(child.id);
-    updatedFiles.push(updated);
-  }
-
-  // 批量更新本地索引，避免中间状态
-  for (const file of updatedFiles) {
-    upsertIndexRow(driveFileToRow(file, isFolderMarker(file)));
+  } finally {
+    // 统一写索引；中途失败时也把已改成功的写入，保持与 Notion 一致
+    for (const file of updatedFiles) {
+      upsertIndexRow(driveFileToRow(file, isFolderMarker(file)));
+    }
   }
 }
 
@@ -1675,10 +1676,12 @@ export async function deleteFolder(folderPath: string): Promise<number> {
 
   // 递归删除文件夹下所有文件
   const { listIndexFilesUnder } = await import("./db");
-  const children = listIndexFilesUnder(path);
+  const children = listIndexFilesUnder(path, { includeMarkers: true });
 
   const notion = getNotionClient();
+  let deletedCount = 0;
   for (const child of children) {
+    if (!isFolderMarker(child)) deletedCount += 1;
     await trashPage(notion, child.id, "删除文件");
     deleteIndexRow(child.id);
     try {
@@ -1689,7 +1692,7 @@ export async function deleteFolder(folderPath: string): Promise<number> {
     }
   }
 
-  return children.length;
+  return deletedCount;
 }
 
 const DRIVE_REQUIRED_PROPS = ["Name", "Folder", "Size", "MIME", "Type", "File"] as const;
