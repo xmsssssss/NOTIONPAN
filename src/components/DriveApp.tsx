@@ -36,6 +36,7 @@ import { ThemeChibi } from "./ThemeToggle";
 import { ThumbImage } from "./ThumbImage";
 import {
   IconCheck,
+  IconChevronRight,
   IconClose,
   IconDownload,
   IconEdit,
@@ -1564,27 +1565,27 @@ export function DriveApp({
         </div>
       )}
       <div className="mb-2 flex shrink-0 flex-col gap-2 sm:mb-4 sm:flex-row sm:items-center sm:gap-3">
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[15px] sm:text-base [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {crumbs.map((c, i) => (
-            <span key={c.path} className="flex shrink-0 items-center gap-1">
-              {i > 0 && <span className="text-[var(--muted)]">/</span>}
-              <button
-                onClick={() => setFolder(c.path)}
-                className={`max-w-[9rem] truncate rounded-md px-1.5 py-1.5 hover:bg-white/80 sm:max-w-[12rem] sm:py-0.5 ${
-                  i === crumbs.length - 1 ? "font-semibold text-[var(--text)]" : "text-[var(--muted)]"
-                }`}
-              >
-                {i === 0 ? (
-                  <span className="inline-flex items-center gap-1">
-                    <IconHome className="h-4 w-4" />
-                    <span>{c.label}</span>
-                  </span>
-                ) : (
-                  c.label
-                )}
-              </button>
-            </span>
-          ))}
+        <nav className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {crumbs.map((c, i) => {
+            const isLast = i === crumbs.length - 1;
+            const isRoot = i === 0;
+            return (
+              <span key={c.path} className="flex shrink-0 items-center gap-1.5">
+                {i > 0 && <IconChevronRight className="h-4 w-4 text-slate-400" />}
+                <button
+                  onClick={() => setFolder(c.path)}
+                  className={`group relative flex max-w-[9rem] items-center gap-1.5 overflow-hidden rounded-lg border px-2.5 py-1.5 text-[13px] font-medium transition-all duration-200 sm:max-w-[12rem] sm:text-sm ${
+                    isLast
+                      ? "border-slate-300 bg-gradient-to-br from-slate-50 to-slate-100 text-slate-900 shadow-sm hover:shadow-md"
+                      : "border-slate-200/60 bg-white/40 text-slate-600 hover:border-slate-300 hover:bg-white/80 hover:text-slate-800 hover:shadow-sm"
+                  }`}
+                >
+                  {isRoot && <IconHome className="h-3.5 w-3.5 shrink-0" />}
+                  <span className={`truncate ${isRoot ? "hidden sm:inline" : ""}`}>{c.label}</span>
+                </button>
+              </span>
+            );
+          })}
         </nav>
 
         <div className="flex items-center gap-2">
