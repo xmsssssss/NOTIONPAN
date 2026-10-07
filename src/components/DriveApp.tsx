@@ -1794,7 +1794,7 @@ export function DriveApp({
           dragOver ? "ring-2 ring-[var(--accent)] ring-offset-2" : ""
         }`}
       >
-<div ref={listScrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
+<div ref={listScrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
         {/* 手机无表格表头：粘性排序栏 */}
         {!listLoading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
           <div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/95 px-2 py-1 text-[11px] text-slate-500 backdrop-blur-sm sm:hidden">
@@ -2001,11 +2001,11 @@ export function DriveApp({
             </div>
 
             {/* 桌面：表格 */}
-            <div className="hidden overflow-x-auto sm:block">
-              <table className="w-full min-w-[640px] text-left text-sm">
-                <thead className="sticky top-0 z-10">
-                  <tr className="border-b border-[var(--border)] bg-gradient-to-r from-white/95 to-[var(--panel-2)]/95 text-xs uppercase tracking-wide text-[var(--muted)] backdrop-blur-sm">
-                    <th className="w-10 py-3 pl-4 pr-0">
+            <div className="hidden sm:block">
+              <table className="w-full min-w-[640px] border-separate border-spacing-0 text-left text-sm">
+                <thead className="text-xs uppercase tracking-wide text-[var(--muted)]">
+                  <tr>
+                    <th className="sticky top-0 z-10 w-10 border-b border-[var(--border)] bg-slate-50/95 py-3 pl-4 pr-0 backdrop-blur-sm">
                       {sortedFiles.length > 0 && (
                         <SelectBox
                           checked={allSelectState === "all"}
@@ -2015,7 +2015,7 @@ export function DriveApp({
                         />
                       )}
                     </th>
-                    <th className="px-4 py-3 font-medium">
+                    <th className="sticky top-0 z-10 border-b border-[var(--border)] bg-slate-50/95 px-4 py-3 font-medium backdrop-blur-sm">
                       <button
                         type="button"
                         onClick={() => toggleSort("name")}
@@ -2026,7 +2026,7 @@ export function DriveApp({
                         名称{sortArrow("name")}
                       </button>
                     </th>
-                    <th className="px-4 py-3 font-medium">
+                    <th className="sticky top-0 z-10 border-b border-[var(--border)] bg-slate-50/95 px-4 py-3 font-medium backdrop-blur-sm">
                       <button
                         type="button"
                         onClick={() => toggleSort("size")}
@@ -2037,7 +2037,7 @@ export function DriveApp({
                         大小{sortArrow("size")}
                       </button>
                     </th>
-                    <th className="px-4 py-3 font-medium">
+                    <th className="sticky top-0 z-10 border-b border-[var(--border)] bg-slate-50/95 px-4 py-3 font-medium backdrop-blur-sm">
                       <button
                         type="button"
                         onClick={() => toggleSort("kind")}
@@ -2048,7 +2048,7 @@ export function DriveApp({
                         类型{sortArrow("kind")}
                       </button>
                     </th>
-                    <th className="px-4 py-3 font-medium">
+                    <th className="sticky top-0 z-10 border-b border-[var(--border)] bg-slate-50/95 px-4 py-3 font-medium backdrop-blur-sm">
                       <button
                         type="button"
                         onClick={() => toggleSort("createdTime")}
@@ -2059,7 +2059,9 @@ export function DriveApp({
                         上传时间{sortArrow("createdTime")}
                       </button>
                     </th>
-                    <th className="px-4 py-3 font-medium text-right">操作</th>
+                    <th className="sticky top-0 z-10 border-b border-[var(--border)] bg-slate-50/95 px-4 py-3 text-right font-medium backdrop-blur-sm">
+                      操作
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
