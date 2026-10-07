@@ -156,3 +156,14 @@ export function buildCrumbs(folder: string, rootLabel = "根目录"): Crumb[] {
   }
   return items;
 }
+
+/**
+ * 折叠面包屑：深路径时只显示 根 > ... > 倒数第N层
+ * - 总层级 <= maxVisible：全部显示
+ * - 总层级 > maxVisible：保留根目录 + 占位符 + 最后 (maxVisible - 2) 层
+ */
+export function collapseCrumbs(crumbs: Crumb[], maxVisible = 4): Array<Crumb | { label: "..."; collapsed: Crumb[] }> {
+  if (crumbs.length <= maxVisible) return crumbs;
+  const collapsed = crumbs.slice(1, crumbs.length - (maxVisible - 2));
+  return [crumbs[0], { label: "..." as const, collapsed }, ...crumbs.slice(crumbs.length - (maxVisible - 2))];
+}

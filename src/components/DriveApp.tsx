@@ -14,6 +14,7 @@ import {
 } from "@/lib/batch";
 import {
   buildCrumbs,
+  collapseCrumbs,
   nextSort,
   pageSlice,
   pruneSelection,
@@ -472,6 +473,7 @@ export function DriveApp({
   }
 
   const crumbs = useMemo(() => buildCrumbs(folder), [folder]);
+  const displayCrumbs = useMemo(() => collapseCrumbs(crumbs, 4), [crumbs]);
 
   useEffect(() => {
     let alive = true;
@@ -1566,8 +1568,24 @@ export function DriveApp({
       )}
       <div className="mb-2 flex shrink-0 flex-col gap-2 sm:mb-4 sm:flex-row sm:items-center sm:gap-3">
         <nav className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {crumbs.map((c, i) => {
-            const isLast = i === crumbs.length - 1;
+          {displayCrumbs.map((item, i) => {
+            const isCollapsed = "collapsed" in item;
+            if (isCollapsed) {
+              return (
+                <span key="collapsed" className="flex shrink-0 items-center gap-1.5">
+                  <IconChevronRight className="h-4 w-4 text-slate-400" />
+                  <button
+                    type="button"
+                    className="group relative flex items-center gap-1.5 rounded-lg border border-slate-200/60 bg-white/40 px-2.5 py-1.5 text-[13px] font-medium text-slate-600 transition-all duration-200 hover:border-slate-300 hover:bg-white/80 hover:text-slate-800 hover:shadow-sm sm:text-sm"
+                    title={`已折叠 ${item.collapsed.length} 层：${item.collapsed.map((c) => c.label).join(" > ")}`}
+                  >
+                    <span>...</span>
+                  </button>
+                </span>
+              );
+            }
+            const c = item;
+            const isLast = i === displayCrumbs.length - 1;
             const isRoot = i === 0;
             return (
               <span key={c.path} className="flex shrink-0 items-center gap-1.5">

@@ -146,3 +146,57 @@ test("buildCrumbs", () => {
     { label: "2024", path: "/照片/2024" },
   ]);
 });
+
+test("collapseCrumbs：层级 <= maxVisible 时全部显示", async () => {
+  const { collapseCrumbs } = await import("../src/lib/drive-list.ts");
+  const short = [
+    { label: "根目录", path: "/" },
+    { label: "照片", path: "/照片" },
+    { label: "2024", path: "/照片/2024" },
+  ];
+  assert.deepEqual(collapseCrumbs(short, 4), short);
+  assert.deepEqual(collapseCrumbs(short, 3), short);
+});
+
+test("collapseCrumbs：层级 > maxVisible 时折叠中间部分", async () => {
+  const { collapseCrumbs } = await import("../src/lib/drive-list.ts");
+  const deep = [
+    { label: "根目录", path: "/" },
+    { label: "a", path: "/a" },
+    { label: "b", path: "/a/b" },
+    { label: "c", path: "/a/b/c" },
+    { label: "d", path: "/a/b/c/d" },
+    { label: "e", path: "/a/b/c/d/e" },
+  ];
+  // maxVisible=4：保留根 + ... + 最后2层
+  const result = collapseCrumbs(deep, 4);
+  assert.equal(result.length, 4);
+  assert.deepEqual(result[0], { label: "根目录", path: "/" });
+  assert.equal(result[1].label, "...");
+  assert.deepEqual(result[1].collapsed, [
+    { label: "a", path: "/a" },
+    { label: "b", path: "/a/b" },
+    { label: "c", path: "/a/b/c" },
+  ]);
+  assert.deepEqual(result[2], { label: "d", path: "/a/b/c/d" });
+  assert.deepEqual(result[3], { label: "e", path: "/a/b/c/d/e" });
+});
+
+test("collapseCrumbs：maxVisible=3 时保留根 + ... + 最后1层", async () => {
+  const { collapseCrumbs } = await import("../src/lib/drive-list.ts");
+  const deep = [
+    { label: "根目录", path: "/" },
+    { label: "a", path: "/a" },
+    { label: "b", path: "/a/b" },
+    { label: "c", path: "/a/b/c" },
+  ];
+  const result = collapseCrumbs(deep, 3);
+  assert.equal(result.length, 3);
+  assert.deepEqual(result[0], { label: "根目录", path: "/" });
+  assert.equal(result[1].label, "...");
+  assert.deepEqual(result[1].collapsed, [
+    { label: "a", path: "/a" },
+    { label: "b", path: "/a/b" },
+  ]);
+  assert.deepEqual(result[2], { label: "c", path: "/a/b/c" });
+});
