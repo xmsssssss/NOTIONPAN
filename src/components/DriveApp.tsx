@@ -1520,13 +1520,13 @@ export function DriveApp({
         paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
       }}
     >
-      <header className="mb-2 flex shrink-0 items-center gap-2.5 sm:mb-6 sm:gap-3">
+      <header className="mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-slate-200/60 bg-gradient-to-br from-white to-slate-50/50 p-3 shadow-sm sm:mb-6 sm:gap-4 sm:p-4">
         <SiteIcon letter={siteIcon} />
         <div className="min-w-0 flex-1">
           <h1 className="truncate bg-gradient-to-r from-slate-800 via-blue-700 to-teal-600 bg-clip-text text-base font-bold tracking-tight text-transparent sm:text-2xl">
             {siteTitle}
           </h1>
-          <div className="flex min-w-0 items-baseline gap-2 text-xs text-[var(--muted)] sm:text-sm">
+          <div className="mt-1 flex min-w-0 items-baseline gap-2 text-xs text-slate-500 sm:text-sm">
             <p className="min-w-0 flex-1 truncate">
               <span className="hidden sm:inline">{siteDescription}</span>
               <span className="sm:hidden">{username || siteDescription}</span>
