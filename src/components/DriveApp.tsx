@@ -1511,7 +1511,7 @@ export function DriveApp({
 
   return (
     <div
-      className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden px-3 sm:px-6"
+      className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col px-3 sm:px-6"
       style={{
         // 视口高度固定：仅中间列表滚动，顶栏/工具栏不跟着滚
         paddingTop: "calc(16px + env(safe-area-inset-top, 0px))",
