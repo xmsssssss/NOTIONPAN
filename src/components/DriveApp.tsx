@@ -4,11 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DriveFile, ListFilesResult } from "@/lib/types";
 import { formatBytes, formatDate, joinFolder, kindLabel, parentFolder, sanitizeFolder } from "@/lib/utils";
 import { useUrlState } from "@/lib/use-url-state";
+import { useViewPrefs, type ViewMode } from "@/lib/use-view-prefs";
 import { errorMessage, toast } from "@/lib/toast";
 import {
+  consumeBatchResponse,
+  type BatchAction,
+  type BatchProgress,
+  type BatchResult,
+} from "@/lib/batch";
+import {
   buildCrumbs,
-  isSortDir,
-  isSortKey,
   nextSort,
   pageSlice,
   pruneSelection,
@@ -17,7 +22,6 @@ import {
   sortFiles,
   sortFolders,
   toggleSelection,
-  type SortDir,
   type SortKey,
 } from "@/lib/drive-list";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -94,6 +98,28 @@ type UploadTask = {
   importUrl?: string;
 };
 
+async function fetchHealth(): Promise<Health> {
+  try {
+    const res = await fetch("/api/health");
+    return (await res.json()) as Health;
+  } catch {
+    return { ok: false, message: "无法连接后端" };
+  }
+}
+
+async function fetchFileList(folder: string, search: string, refresh?: boolean): Promise<ListFilesResult> {
+  const params = new URLSearchParams({ folder });
+  if (search.trim()) params.set("q", search.trim());
+  if (refresh) params.set("refresh", "1");
+  const res = await fetch(`/api/files?${params}`);
+  const data = await res.json();
+  if (!res.ok) {
+    // 展示后端真实错误，便于排查
+    throw new Error(data.error || data.message || `加载失败 (${res.status})`);
+  }
+  return data as ListFilesResult;
+}
+
 export function DriveApp({
   siteTitle = "NotionPan",
   siteDescription = "Notion 存储 · 网盘体验",
@@ -119,7 +145,8 @@ export function DriveApp({
   );
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  /** 手动刷新中；目录切换的加载态由 loadedScope 派生（见 listLoading） */
+  const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
@@ -134,6 +161,8 @@ export function DriveApp({
     siblings: DriveFile[];
     minimized: boolean;
     playMode: PlayMode;
+    /** 开播时所在目录；只有仍在该目录时才随排序刷新 siblings */
+    playlistFolder: string;
   } | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   // 供渲染期传给子组件：ref 变化不触发重渲染，所以同步一份到 state
@@ -227,10 +256,8 @@ export function DriveApp({
   const [renameFolderValue, setRenameFolderValue] = useState("");
   const [deleteFolderDialog, setDeleteFolderDialog] = useState<string | null>(null);
   const [deleteFolderCount, setDeleteFolderCount] = useState<number>(0);
-  const [viewMode, setViewMode] = useState<"list" | "gallery">("list");
-  const [viewReady, setViewReady] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>("createdTime");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [{ viewMode, sortKey, sortDir }, setViewPrefs] = useViewPrefs();
+  const setViewMode = useCallback((v: ViewMode) => setViewPrefs({ viewMode: v }), [setViewPrefs]);
   // 多选（仅文件；文件夹走右键菜单）
   const [rawSelected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   /** 画廊/手机视图下点击即勾选；桌面表格有复选框，无需进入此模式 */
@@ -238,6 +265,9 @@ export function DriveApp({
   const selectAnchorRef = useRef<string | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [batchMoveOpen, setBatchMoveOpen] = useState(false);
+  /** 批量删除/移动进行中的进度；null = 未在执行 */
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const batchAbortRef = useRef<AbortController | null>(null);
   const [fabOpen, setFabOpen] = useState(false);
   const fabRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -269,31 +299,6 @@ export function DriveApp({
       window.removeEventListener("keydown", onKey);
     };
   }, [fabOpen]);
-
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem("notionpan-view");
-      if (saved === "gallery" || saved === "list") setViewMode(saved);
-      const sk = window.localStorage.getItem("notionpan-sort-key");
-      if (isSortKey(sk)) setSortKey(sk);
-      const sd = window.localStorage.getItem("notionpan-sort-dir");
-      if (isSortDir(sd)) setSortDir(sd);
-    } catch {
-      // ignore
-    }
-    setViewReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (!viewReady) return;
-    try {
-      window.localStorage.setItem("notionpan-view", viewMode);
-      window.localStorage.setItem("notionpan-sort-key", sortKey);
-      window.localStorage.setItem("notionpan-sort-dir", sortDir);
-    } catch {
-      // ignore
-    }
-  }, [viewMode, sortKey, sortDir, viewReady]);
 
   const sortedFiles = useMemo(() => sortFiles(files, sortKey, sortDir), [files, sortKey, sortDir]);
   const sortedFolders = useMemo(
@@ -390,17 +395,13 @@ export function DriveApp({
 
   const toggleSort = (key: SortKey) => {
     const next = nextSort({ key: sortKey, dir: sortDir }, key);
-    setSortKey(next.key);
-    setSortDir(next.dir);
+    setViewPrefs({ sortKey: next.key, sortDir: next.dir });
   };
 
   const sortArrow = (key: SortKey) => {
     if (sortKey !== key) return "";
     return sortDir === "asc" ? " ↑" : " ↓";
   };
-
-  /** 开播时所在目录；切走后不再用 sortedFiles 覆盖 playlist */
-  const audioPlaylistFolderRef = useRef<string | null>(null);
 
   const openPreview = useCallback(
     (file: DriveFile) => {
@@ -409,13 +410,14 @@ export function DriveApp({
         // siblings 冻结为开播时目录列表（含 .lrc），播放列表再在 PreviewModal 里过滤
         const folderFiles = sortedFiles.length ? sortedFiles : [file];
         const wasPlaying = audioElRef.current ? !audioElRef.current.paused : autoPlay;
-        audioPlaylistFolderRef.current = sanitizeFolder(folder);
+        const playlistFolder = sanitizeFolder(folder);
         setAudioSession((s) => {
           if (s && (s.file.id === file.id || s.minimized)) {
             return {
               ...s,
               file,
               minimized: false,
+              playlistFolder,
               // 最小化恢复：保留原 playlist；新开曲：用当前目录
               siblings: s.minimized && s.siblings.length ? s.siblings : folderFiles,
             };
@@ -425,6 +427,7 @@ export function DriveApp({
             siblings: folderFiles,
             minimized: false,
             playMode: s?.playMode || "once",
+            playlistFolder,
           };
         });
         // 同一常驻 audio：展开不 pause，只保证 src
@@ -441,76 +444,82 @@ export function DriveApp({
     [sortedFiles, folder, autoPlay, ensureAudioSrc],
   );
 
-  // 仅当仍在「开播时的目录」且列表只是同目录重排时，才同步 siblings 顺序；
-  // 切文件夹 / 搜索时 sortedFiles 变了也不要改播放列表
-  useEffect(() => {
-    if (!audioSession) {
-      audioPlaylistFolderRef.current = null;
-      return;
+  // 仅当仍在「开播时的目录」且当前曲仍在列表中时，才随最新列表（重排/增删）刷新 siblings；
+  // 切文件夹 / 搜索时不改播放列表。渲染期按「列表引用变化」调整，代替 effect 里 setState。
+  const [playlistSyncedFiles, setPlaylistSyncedFiles] = useState(sortedFiles);
+  if (playlistSyncedFiles !== sortedFiles) {
+    setPlaylistSyncedFiles(sortedFiles);
+    if (
+      audioSession &&
+      sortedFiles.length > 0 &&
+      audioSession.playlistFolder === sanitizeFolder(folder) &&
+      audioSession.siblings !== sortedFiles &&
+      sortedFiles.some((f) => f.id === audioSession.file.id)
+    ) {
+      setAudioSession({ ...audioSession, siblings: sortedFiles });
     }
-    if (audioPlaylistFolderRef.current === null) {
-      audioPlaylistFolderRef.current = sanitizeFolder(folder);
-      return;
-    }
-    if (sanitizeFolder(folder) !== audioPlaylistFolderRef.current) return;
-    if (!sortedFiles.length) return;
-    // 同目录：若当前曲仍在列表中，则按最新排序刷新 siblings
-    const stillHere = sortedFiles.some((f) => f.id === audioSession.file.id);
-    if (!stillHere) return;
-    setAudioSession((s) => (s ? { ...s, siblings: sortedFiles } : s));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedFiles, folder]);
+  }
 
   const crumbs = useMemo(() => buildCrumbs(folder), [folder]);
 
-  const loadHealth = useCallback(async () => {
-    try {
-      const res = await fetch("/api/health");
-      const data = (await res.json()) as Health;
-      setHealth(data);
-    } catch {
-      setHealth({ ok: false, message: "无法连接后端" });
-    }
+  useEffect(() => {
+    let alive = true;
+    void fetchHealth().then((h) => {
+      if (alive) setHealth(h);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const loadFilesSeqRef = useRef(0);
+  /** 最近一次列表请求完成时对应的 folder+search；与当前不一致即视为加载中（派生，不在 effect 里 setState） */
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
 
-  const loadFiles = useCallback(async (opts?: { refresh?: boolean }) => {
+  /** 发请求并写入结果；过期响应（用户已切到其它目录/搜索）丢弃 */
+  const applyFileList = useCallback(
+    (seq: number, scope: string, p: Promise<ListFilesResult>) =>
+      p.then(
+        (result) => {
+          if (seq !== loadFilesSeqRef.current) return;
+          setFiles(result.files || []);
+          setFolders(result.folders || []);
+          setError(null);
+          setLoadedScope(scope);
+          setLoading(false);
+        },
+        (e: unknown) => {
+          if (seq !== loadFilesSeqRef.current) return;
+          setError(e instanceof Error ? e.message : "加载失败");
+          setFiles([]);
+          setFolders([]);
+          setLoadedScope(scope);
+          setLoading(false);
+        },
+      ),
+    [],
+  );
+
+  /** 手动刷新（操作后、点刷新）：显式显示加载态 */
+  const loadFiles = useCallback(
+    async (opts?: { refresh?: boolean }) => {
+      const seq = ++loadFilesSeqRef.current;
+      setLoading(true);
+      await applyFileList(seq, `${folder}\n${search}`, fetchFileList(folder, search, opts?.refresh));
+    },
+    [folder, search, applyFileList],
+  );
+
+  // 目录 / 搜索变化时自动加载
+  useEffect(() => {
     const seq = ++loadFilesSeqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({ folder });
-      if (search.trim()) params.set("q", search.trim());
-      if (opts?.refresh) params.set("refresh", "1");
-      const res = await fetch(`/api/files?${params}`);
-      const data = await res.json();
-      // 过期响应：用户已切到其它目录/搜索，丢弃
-      if (seq !== loadFilesSeqRef.current) return;
-      if (!res.ok) {
-        // 展示后端真实错误，便于排查
-        throw new Error(data.error || data.message || `加载失败 (${res.status})`);
-      }
-      const result = data as ListFilesResult;
-      setFiles(result.files || []);
-      setFolders(result.folders || []);
-    } catch (e) {
-      if (seq !== loadFilesSeqRef.current) return;
-      setError(e instanceof Error ? e.message : "加载失败");
-      setFiles([]);
-      setFolders([]);
-    } finally {
-      if (seq === loadFilesSeqRef.current) setLoading(false);
-    }
-  }, [folder, search]);
+    void applyFileList(seq, `${folder}\n${search}`, fetchFileList(folder, search));
+  }, [folder, search, applyFileList]);
 
-  useEffect(() => {
-    loadHealth();
-  }, [loadHealth]);
-
-  useEffect(() => {
-    loadFiles();
-  }, [loadFiles]);
+  const listScopeKey = `${folder}\n${search}`;
+  const listLoading = loading || loadedScope !== listScopeKey;
+  // 切目录时旧目录的报错不再展示
+  const listError = loadedScope === listScopeKey ? error : null;
 
   const patchUploadTask = useCallback((id: string, patch: Partial<UploadTask>) => {
     setUploadTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -958,7 +967,6 @@ export function DriveApp({
     }
     setAudioPlaying(false);
     setAudioSession(null);
-    audioPlaylistFolderRef.current = null;
   }, []);
 
   const submitDelete = async () => {
@@ -1129,28 +1137,47 @@ export function DriveApp({
 
   // ---------- 批量操作 ----------
 
-  type BatchResult = {
-    succeeded: string[];
-    failed: Array<{ id: string; error: string }>;
-    files: DriveFile[];
+  const runBatch = async (body: {
+    action: BatchAction;
+    ids: string[];
+    folder?: string;
+  }): Promise<BatchResult & { interrupted: boolean }> => {
+    const ac = new AbortController();
+    batchAbortRef.current = ac;
+    setBatchProgress({ done: 0, total: body.ids.length });
+    try {
+      let res: Response;
+      try {
+        res = await fetch("/api/files/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: ac.signal,
+        });
+      } catch (e) {
+        // 响应头到达前就点了停止：服务端可能已处理了一部分，按「中途停止」处理并以刷新结果为准
+        if (ac.signal.aborted) return { succeeded: [], failed: [], files: [], interrupted: true };
+        throw e;
+      }
+      return await consumeBatchResponse(res, setBatchProgress);
+    } finally {
+      batchAbortRef.current = null;
+      setBatchProgress(null);
+    }
   };
 
-  const runBatch = async (
-    body: { action: "delete" | "move"; ids: string[]; folder?: string },
-  ): Promise<BatchResult> => {
-    const res = await fetch("/api/files/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "批量操作失败");
-    return data as BatchResult;
-  };
+  const stopBatch = () => batchAbortRef.current?.abort();
 
-  /** 汇总提示：全部成功 / 部分失败（展示第一条原因） */
-  const reportBatch = (verb: string, r: BatchResult) => {
-    if (r.failed.length === 0) {
+  /** 汇总提示：全部成功 / 部分失败（展示第一条原因）/ 中途停止 */
+  const reportBatch = (verb: string, r: BatchResult & { interrupted: boolean }, total: number) => {
+    if (r.interrupted) {
+      const rest = total - r.succeeded.length - r.failed.length;
+      toast.error(
+        `已停止：${verb}了 ${r.succeeded.length} 个` +
+          (r.failed.length ? `，${r.failed.length} 个失败` : "") +
+          (rest > 0 ? `，${rest} 个未处理` : ""),
+      );
+    } else if (r.failed.length === 0) {
       toast.success(`已${verb} ${r.succeeded.length} 个文件`);
     } else if (r.succeeded.length === 0) {
       toast.error(`${verb}失败：${r.failed[0].error}`);
@@ -1175,6 +1202,7 @@ export function DriveApp({
     try {
       const r = await runBatch({ action: "delete", ids });
       const gone = new Set(r.succeeded);
+      const handled = new Set([...r.succeeded, ...r.failed.map((f) => f.id)]);
       setFiles((prev) => prev.filter((f) => !gone.has(f.id)));
       if (preview && gone.has(preview.id)) setPreview(null);
       if (audioSessionRef.current && gone.has(audioSessionRef.current.file.id)) {
@@ -1182,10 +1210,12 @@ export function DriveApp({
       } else {
         setAudioSession((s) => (s ? { ...s, siblings: s.siblings.filter((f) => !gone.has(f.id)) } : s));
       }
-      // 失败的保持勾选，方便重试
-      setSelected(new Set(r.failed.map((f) => f.id)));
+      // 失败的、以及中途停止未处理的保持勾选，方便重试
+      setSelected(new Set([...r.failed.map((f) => f.id), ...ids.filter((id) => !handled.has(id))]));
       setBatchDeleteOpen(false);
-      reportBatch("删除", r);
+      reportBatch("删除", r, ids.length);
+      // 中途停止时，正在处理的那一项可能已在服务端完成：以服务端为准
+      if (r.interrupted) await loadFiles();
     } catch (e) {
       toast.error(errorMessage(e, "批量删除失败"));
     } finally {
@@ -1205,9 +1235,10 @@ export function DriveApp({
     setDialogBusy(true);
     try {
       const r = await runBatch({ action: "move", ids, folder: target });
-      setSelected(new Set(r.failed.map((f) => f.id)));
+      const handled = new Set([...r.succeeded, ...r.failed.map((f) => f.id)]);
+      setSelected(new Set([...r.failed.map((f) => f.id), ...ids.filter((id) => !handled.has(id))]));
       setBatchMoveOpen(false);
-      reportBatch("移动", r);
+      reportBatch("移动", r, ids.length);
       await loadFiles();
     } catch (e) {
       toast.error(errorMessage(e, "批量移动失败"));
@@ -1441,66 +1472,6 @@ export function DriveApp({
     if (id === "delete") openDelete(target.file);
   };
 
-  /** 单个 / 批量移动共用的目标目录选择器 */
-  const renderFolderPicker = (mode: "single" | "batch") => (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-700">选择目标文件夹</span>
-        <button
-          type="button"
-          onClick={() => void loadAllFolders()}
-          className="text-xs text-blue-600 hover:underline"
-          disabled={foldersLoading}
-        >
-          {foldersLoading ? "刷新中…" : "刷新目录"}
-        </button>
-      </div>
-
-      <div className="max-h-56 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2">
-        {foldersLoading && allFolders.length <= 1 ? (
-          <div className="px-2 py-6 text-center text-sm text-slate-500">加载文件夹…</div>
-        ) : (
-          allFolders.map((path) => {
-            const isTarget = sanitizeFolder(moveValue) === sanitizeFolder(path);
-            const depth = path === "/" ? 0 : path.split("/").filter(Boolean).length - 1;
-            const label = path === "/" ? "根目录 /" : path.split("/").filter(Boolean).pop() || path;
-            return (
-              <button
-                key={path}
-                type="button"
-                onClick={() => setMoveValue(path)}
-                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
-                  isTarget
-                    ? "bg-gradient-to-r from-blue-500 to-teal-400 text-white shadow-md shadow-blue-500/20"
-                    : "bg-white text-slate-700 hover:bg-blue-50"
-                }`}
-                style={{ paddingLeft: `${10 + depth * 14}px` }}
-              >
-                <IconFolder className={`h-4 w-4 shrink-0 ${isTarget ? "text-white" : "text-amber-500"}`} />
-                <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-                <span className={`shrink-0 text-xs ${isTarget ? "text-white/80" : "text-slate-400"}`}>
-                  {path}
-                </span>
-              </button>
-            );
-          })
-        )}
-      </div>
-
-      <DialogInput
-        label="或手动输入路径"
-        value={moveValue}
-        onChange={setMoveValue}
-        placeholder="/ 或 /docs/images"
-        onEnter={() => void (mode === "batch" ? submitBatchMove() : submitMove())}
-      />
-      <p className="text-xs text-slate-500">
-        已选：
-        <span className="ml-1 font-medium text-slate-700">{sanitizeFolder(moveValue || "/")}</span>
-      </p>
-    </div>
-  );
-
   return (
     <div
       className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden px-3 sm:px-6"
@@ -1697,9 +1668,9 @@ export function DriveApp({
         </div>
       )}
 
-      {error && (
+      {listError && (
         <div className="mb-2 shrink-0 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 sm:mb-4 sm:px-4 sm:py-3 sm:text-sm">
-          {error}
+          {listError}
         </div>
       )}
 
@@ -1772,7 +1743,7 @@ export function DriveApp({
       >
 <div ref={listScrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl [-webkit-overflow-scrolling:touch]">
         {/* 手机无表格表头：粘性排序栏 */}
-        {!loading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
+        {!listLoading && (sortedFolders.length > 0 || sortedFiles.length > 0) && (
           <div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/95 px-2 py-1 text-[11px] text-slate-500 backdrop-blur-sm sm:hidden">
             {(
               [
@@ -1796,7 +1767,7 @@ export function DriveApp({
             ))}
           </div>
         )}
-        {loading ? (
+        {listLoading ? (
           <div className="flex h-full min-h-48 items-center justify-center text-[var(--muted)]">加载中…</div>
         ) : sortedFolders.length === 0 && sortedFiles.length === 0 ? (
           <div
@@ -2133,7 +2104,7 @@ export function DriveApp({
             </div>
           </>
         )}
-        {!loading && page.total > 0 && (
+        {!listLoading && page.total > 0 && (
           <LoadMoreFooter
             shown={page.shown}
             total={page.total}
@@ -2575,6 +2546,7 @@ export function DriveApp({
                       siblings: sortedFiles.length ? sortedFiles : [f],
                       minimized: false,
                       playMode: "once",
+                      playlistFolder: sanitizeFolder(folder),
                     },
               );
               ensureAudioSrc(f.id, wasPlaying);
@@ -2592,6 +2564,7 @@ export function DriveApp({
                           siblings: sortedFiles.length ? sortedFiles : [preview],
                           minimized: true,
                           playMode: "once",
+                          playlistFolder: sanitizeFolder(folder),
                         },
                   );
                   setPreview(null);
@@ -2785,7 +2758,14 @@ export function DriveApp({
           </>
         }
       >
-        {renderFolderPicker("single")}
+        <FolderPicker
+          folders={allFolders}
+          loading={foldersLoading}
+          onReload={() => void loadAllFolders()}
+          value={moveValue}
+          onChange={setMoveValue}
+          onEnter={() => void submitMove()}
+        />
       </Dialog>
 
       <Dialog
@@ -2795,15 +2775,30 @@ export function DriveApp({
         onClose={() => !dialogBusy && setBatchMoveOpen(false)}
         wide
         footer={
-          <>
-            <BtnGhost onClick={() => setBatchMoveOpen(false)}>取消</BtnGhost>
-            <BtnPrimary onClick={() => void submitBatchMove()} disabled={dialogBusy || !moveValue.trim()}>
-              {dialogBusy ? "移动中…" : "移动到此处"}
-            </BtnPrimary>
-          </>
+          batchProgress ? (
+            <BtnGhost onClick={stopBatch}>停止</BtnGhost>
+          ) : (
+            <>
+              <BtnGhost onClick={() => setBatchMoveOpen(false)}>取消</BtnGhost>
+              <BtnPrimary onClick={() => void submitBatchMove()} disabled={dialogBusy || !moveValue.trim()}>
+                {dialogBusy ? "移动中…" : "移动到此处"}
+              </BtnPrimary>
+            </>
+          )
         }
       >
-        {renderFolderPicker("batch")}
+        {batchProgress ? (
+          <BatchProgressBar verb="移动" progress={batchProgress} />
+        ) : (
+          <FolderPicker
+            folders={allFolders}
+            loading={foldersLoading}
+            onReload={() => void loadAllFolders()}
+            value={moveValue}
+            onChange={setMoveValue}
+            onEnter={() => void submitBatchMove()}
+          />
+        )}
       </Dialog>
 
       <Dialog
@@ -2816,18 +2811,23 @@ export function DriveApp({
         }
         onClose={() => !dialogBusy && setBatchDeleteOpen(false)}
         footer={
-          <>
-            <BtnGhost onClick={() => setBatchDeleteOpen(false)}>取消</BtnGhost>
-            <BtnPrimary
-              danger
-              onClick={() => void submitBatchDelete()}
-              disabled={dialogBusy || selectedFiles.length === 0}
-            >
-              {dialogBusy ? "删除中…" : `删除 ${selectedFiles.length} 个`}
-            </BtnPrimary>
-          </>
+          batchProgress ? (
+            <BtnGhost onClick={stopBatch}>停止</BtnGhost>
+          ) : (
+            <>
+              <BtnGhost onClick={() => setBatchDeleteOpen(false)}>取消</BtnGhost>
+              <BtnPrimary
+                danger
+                onClick={() => void submitBatchDelete()}
+                disabled={dialogBusy || selectedFiles.length === 0}
+              >
+                {dialogBusy ? "删除中…" : `删除 ${selectedFiles.length} 个`}
+              </BtnPrimary>
+            </>
+          )
         }
       >
+        {batchProgress && <BatchProgressBar verb="删除" progress={batchProgress} danger className="mb-3" />}
         <ul className="max-h-48 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2 text-sm text-slate-700">
           {selectedFiles.slice(0, 50).map((f) => (
             <li key={f.id} className="flex items-center gap-2 truncate">
@@ -2905,6 +2905,122 @@ export function DriveApp({
       />
 
       <ShareDialog key={shareDialog?.id ?? "none"} file={shareDialog} onClose={() => setShareDialog(null)} />
+    </div>
+  );
+}
+
+/** 单个 / 批量移动共用的目标目录选择器 */
+function FolderPicker({
+  folders,
+  loading,
+  onReload,
+  value,
+  onChange,
+  onEnter,
+}: {
+  folders: string[];
+  loading: boolean;
+  onReload: () => void;
+  value: string;
+  onChange: (v: string) => void;
+  onEnter: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-slate-700">选择目标文件夹</span>
+        <button
+          type="button"
+          onClick={onReload}
+          className="text-xs text-blue-600 hover:underline"
+          disabled={loading}
+        >
+          {loading ? "刷新中…" : "刷新目录"}
+        </button>
+      </div>
+
+      <div className="max-h-56 space-y-1 overflow-auto rounded-xl border border-slate-200 bg-slate-50/80 p-2">
+        {loading && folders.length <= 1 ? (
+          <div className="px-2 py-6 text-center text-sm text-slate-500">加载文件夹…</div>
+        ) : (
+          folders.map((path) => {
+            const isTarget = sanitizeFolder(value) === sanitizeFolder(path);
+            const depth = path === "/" ? 0 : path.split("/").filter(Boolean).length - 1;
+            const label = path === "/" ? "根目录 /" : path.split("/").filter(Boolean).pop() || path;
+            return (
+              <button
+                key={path}
+                type="button"
+                onClick={() => onChange(path)}
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
+                  isTarget
+                    ? "bg-gradient-to-r from-blue-500 to-teal-400 text-white shadow-md shadow-blue-500/20"
+                    : "bg-white text-slate-700 hover:bg-blue-50"
+                }`}
+                style={{ paddingLeft: `${10 + depth * 14}px` }}
+              >
+                <IconFolder className={`h-4 w-4 shrink-0 ${isTarget ? "text-white" : "text-amber-500"}`} />
+                <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+                <span className={`shrink-0 text-xs ${isTarget ? "text-white/80" : "text-slate-400"}`}>
+                  {path}
+                </span>
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      <DialogInput
+        label="或手动输入路径"
+        value={value}
+        onChange={onChange}
+        placeholder="/ 或 /docs/images"
+        onEnter={onEnter}
+      />
+      <p className="text-xs text-slate-500">
+        已选：
+        <span className="ml-1 font-medium text-slate-700">{sanitizeFolder(value || "/")}</span>
+      </p>
+    </div>
+  );
+}
+
+/** 批量操作进度条（逐项回报，done/total） */
+function BatchProgressBar({
+  verb,
+  progress,
+  danger = false,
+  className = "",
+}: {
+  verb: string;
+  progress: BatchProgress;
+  danger?: boolean;
+  className?: string;
+}) {
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  return (
+    <div className={`space-y-1.5 ${className}`} role="status" aria-live="polite">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-medium text-slate-700">
+          正在{verb}… {progress.done} / {progress.total}
+        </span>
+        <span className="tabular-nums text-xs text-slate-400">{pct}%</span>
+      </div>
+      <div
+        className="h-2 overflow-hidden rounded-full bg-slate-100"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={progress.done}
+      >
+        <div
+          className={`h-full rounded-full transition-[width] duration-300 ${
+            danger ? "bg-gradient-to-r from-rose-500 to-red-400" : "bg-gradient-to-r from-sky-500 to-teal-400"
+          }`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[11px] text-slate-400">可随时停止，已完成的不会回滚</p>
     </div>
   );
 }
