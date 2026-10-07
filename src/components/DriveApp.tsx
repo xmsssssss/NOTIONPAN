@@ -1200,7 +1200,7 @@ export function DriveApp({
             <button
               type="button"
               onClick={() => setViewMode("list")}
-              className={`inline-flex h-full items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition sm:px-2.5 ${
+              className={`inline-flex h-full min-h-0 items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition sm:px-2.5 ${
                 viewMode === "list"
                   ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow"
                   : "text-slate-600 hover:bg-slate-50"
@@ -1214,7 +1214,7 @@ export function DriveApp({
             <button
               type="button"
               onClick={() => setViewMode("gallery")}
-              className={`inline-flex h-full items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition ${
+              className={`inline-flex h-full min-h-0 items-center justify-center gap-1 rounded-lg px-2.5 text-xs transition ${
                 viewMode === "gallery"
                   ? "bg-gradient-to-r from-sky-500 to-teal-400 text-white shadow"
                   : "text-slate-600 hover:bg-slate-50"
