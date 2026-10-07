@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getPasswordVersion, publicAppConfig, readAppConfig } from "@/lib/app-config";
 import { getSession } from "@/lib/session";
+import { ensureRuntimeEnvLoaded, getRuntimeEnv } from "@/lib/runtime-env";
 import {
   checkRateLimit,
   clearRateLimit,
@@ -97,11 +98,18 @@ export async function POST(req: NextRequest) {
     session.passwordVersion = getPasswordVersion(cfg);
     await session.save();
 
+    ensureRuntimeEnvLoaded();
+    const hasApiKey = Boolean(getRuntimeEnv("NOTION_API_KEY")?.trim());
+    const hasDatabaseId = Boolean(getRuntimeEnv("NOTION_DATABASE_ID")?.trim());
+
     return NextResponse.json({
       ok: true,
       ...publicAppConfig(cfg),
       isLoggedIn: true,
       sessionUser: cfg.username,
+      hasApiKey,
+      hasDatabaseId,
+      hasNotionConfig: hasApiKey && hasDatabaseId,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "登录失败";
