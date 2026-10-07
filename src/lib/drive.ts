@@ -49,7 +49,9 @@ import {
   blockTypeForKind,
   detectKind,
   formatBytes,
+  joinFolder,
   normalizeNotionId,
+  parentFolder,
   sanitizeFolder,
   sameNotionId,
 } from "./utils";
@@ -1609,6 +1611,78 @@ export async function moveFile(pageId: string, folder: string): Promise<DriveFil
   const file = await getFile(id);
   upsertIndexRow(driveFileToRow(file, isFolderMarker(file)));
   return file;
+}
+
+export async function renameFolder(folderPath: string, newName: string): Promise<void> {
+  const oldPath = sanitizeFolder(folderPath);
+  const nextName = newName.trim();
+  if (!nextName) throw new Error("文件夹名不能为空");
+  if (oldPath === "/") throw new Error("无法重命名根目录");
+
+  const parent = parentFolder(oldPath);
+  const newPath = joinFolder(parent, nextName);
+  if (oldPath === newPath) return;
+
+  // 检查目标路径是否已存在
+  const { listIndexSubfolders } = await import("./db");
+  const siblings = listIndexSubfolders(parent);
+  if (siblings.includes(newPath)) {
+    throw new Error(`目标目录已存在「${nextName}」`);
+  }
+
+  // 批量更新所有子文件的 folder 字段
+  const { listIndexFilesUnder } = await import("./db");
+  const children = listIndexFilesUnder(oldPath);
+  if (children.length === 0) return;
+
+  const notion = getNotionClient();
+  for (const child of children) {
+    const oldChildFolder = child.folder;
+    let newChildFolder: string;
+    if (oldChildFolder === oldPath) {
+      newChildFolder = newPath;
+    } else if (oldChildFolder.startsWith(`${oldPath}/`)) {
+      newChildFolder = newPath + oldChildFolder.slice(oldPath.length);
+    } else {
+      continue;
+    }
+
+    await withNotionRetry(
+      () =>
+        notion.pages.update({
+          page_id: child.id,
+          properties: {
+            Folder: { rich_text: richText(newChildFolder) },
+          },
+        }),
+      "重命名文件夹",
+    );
+    const updated = await getFile(child.id);
+    upsertIndexRow(driveFileToRow(updated, isFolderMarker(updated)));
+  }
+}
+
+export async function deleteFolder(folderPath: string): Promise<number> {
+  const path = sanitizeFolder(folderPath);
+  if (path === "/") throw new Error("无法删除根目录");
+
+  // 递归删除文件夹下所有文件
+  const { listIndexFilesUnder } = await import("./db");
+  const children = listIndexFilesUnder(path);
+
+  const notion = getNotionClient();
+  for (const child of children) {
+    await trashPage(notion, child.id, "删除文件");
+    deleteIndexRow(child.id);
+    try {
+      const { deleteThumb } = await import("./thumb");
+      deleteThumb(child.id);
+    } catch {
+      // ignore
+    }
+  }
+
+  return children.length;
 }
 
 const DRIVE_REQUIRED_PROPS = ["Name", "Folder", "Size", "MIME", "Type", "File"] as const;

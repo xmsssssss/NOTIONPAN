@@ -217,6 +217,10 @@ export function DriveApp({
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<DriveFile | null>(null);
   const [shareDialog, setShareDialog] = useState<DriveFile | null>(null);
+  const [renameFolderDialog, setRenameFolderDialog] = useState<string | null>(null);
+  const [renameFolderValue, setRenameFolderValue] = useState("");
+  const [deleteFolderDialog, setDeleteFolderDialog] = useState<string | null>(null);
+  const [deleteFolderCount, setDeleteFolderCount] = useState<number>(0);
   const [viewMode, setViewMode] = useState<"list" | "gallery">("list");
   const [viewReady, setViewReady] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("createdTime");
@@ -822,6 +826,25 @@ export function DriveApp({
 
   const openShare = (file: DriveFile) => setShareDialog(file);
 
+  const openRenameFolder = (folderName: string) => {
+    setRenameFolderDialog(folderName);
+    setRenameFolderValue(folderName);
+  };
+
+  const openDeleteFolder = async (folderName: string) => {
+    const folderPath = joinFolder(folder, folderName);
+    // 先查询子文件数量
+    try {
+      const res = await fetch(`/api/folders?folder=${encodeURIComponent(folderPath)}`);
+      const data = await res.json();
+      const count = typeof data.count === "number" ? data.count : 0;
+      setDeleteFolderCount(count);
+      setDeleteFolderDialog(folderName);
+    } catch (e) {
+      toast.error(errorMessage(e, "获取文件夹信息失败"));
+    }
+  };
+
   const stopAudioSession = useCallback(() => {
     const el = audioElRef.current;
     if (el) {
@@ -948,9 +971,61 @@ export function DriveApp({
       setFolderDialog(false);
       setFolderName("");
       toast.success(`已创建文件夹「${base}」`);
-      await loadFiles();
     } catch (e) {
       toast.error(errorMessage(e, "创建文件夹失败"));
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const submitRenameFolder = async () => {
+    if (!renameFolderDialog) return;
+    const name = renameFolderValue.trim();
+    if (!name || name === renameFolderDialog) {
+      setRenameFolderDialog(null);
+      return;
+    }
+    setDialogBusy(true);
+    try {
+      const folderPath = joinFolder(folder, renameFolderDialog);
+      const res = await fetch("/api/folders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: folderPath, name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "重命名失败");
+      // 更新文件夹列表
+      setFolders((prev) =>
+        prev.map((f) => (f === renameFolderDialog ? name : f)).sort((a, b) => a.localeCompare(b, "zh-CN")),
+      );
+      setRenameFolderDialog(null);
+      toast.success("已重命名");
+      await loadFiles();
+    } catch (e) {
+      toast.error(errorMessage(e, "重命名失败"));
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const submitDeleteFolder = async () => {
+    if (!deleteFolderDialog) return;
+    setDialogBusy(true);
+    try {
+      const folderPath = joinFolder(folder, deleteFolderDialog);
+      const res = await fetch(`/api/folders?folder=${encodeURIComponent(folderPath)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "删除失败");
+      const count = typeof data.deletedCount === "number" ? data.deletedCount : 0;
+      setFolders((prev) => prev.filter((f) => f !== deleteFolderDialog));
+      setDeleteFolderDialog(null);
+      toast.success(count > 0 ? `已删除文件夹及其中 ${count} 个文件` : "已删除文件夹");
+      await loadFiles();
+    } catch (e) {
+      toast.error(errorMessage(e, "删除失败"));
     } finally {
       setDialogBusy(false);
     }
@@ -1051,6 +1126,10 @@ export function DriveApp({
       return [
         { id: "open-folder", label: "打开", icon: icon(<IconOpen className="h-4 w-4" />) },
         { id: "upload-here", label: "上传到此文件夹", icon: icon(<IconUpload className="h-4 w-4" />) },
+        { id: "sep1", label: "", separator: true },
+        { id: "rename-folder", label: "重命名", icon: icon(<IconEdit className="h-4 w-4" />) },
+        { id: "sep2", label: "", separator: true },
+        { id: "delete-folder", label: "删除", icon: icon(<IconTrash className="h-4 w-4" />), danger: true },
       ];
     }
 
@@ -1098,6 +1177,14 @@ export function DriveApp({
     }
     if (id === "open-folder" && target.type === "folder") {
       setFolder(joinFolder(folder, target.name));
+      return;
+    }
+    if (id === "rename-folder" && target.type === "folder") {
+      openRenameFolder(target.name);
+      return;
+    }
+    if (id === "delete-folder" && target.type === "folder") {
+      openDeleteFolder(target.name);
       return;
     }
     if (target.type !== "file") return;
@@ -2345,6 +2432,50 @@ export function DriveApp({
             <BtnGhost onClick={() => setDeleteDialog(null)}>取消</BtnGhost>
             <BtnPrimary danger onClick={() => void submitDelete()} disabled={dialogBusy}>
               {dialogBusy ? "删除中…" : "删除"}
+            </BtnPrimary>
+          </>
+        }
+      />
+
+      <Dialog
+        open={Boolean(renameFolderDialog)}
+        title="重命名文件夹"
+        description={renameFolderDialog ? `原名称：${renameFolderDialog}` : undefined}
+        onClose={() => !dialogBusy && setRenameFolderDialog(null)}
+        footer={
+          <>
+            <BtnGhost onClick={() => setRenameFolderDialog(null)}>取消</BtnGhost>
+            <BtnPrimary onClick={() => void submitRenameFolder()} disabled={dialogBusy || !renameFolderValue.trim()}>
+              {dialogBusy ? "保存中…" : "保存"}
+            </BtnPrimary>
+          </>
+        }
+      >
+        <DialogInput
+          label="新名称"
+          value={renameFolderValue}
+          onChange={setRenameFolderValue}
+          autoFocus
+          onEnter={() => void submitRenameFolder()}
+        />
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteFolderDialog)}
+        title="确认删除文件夹"
+        description={
+          deleteFolderDialog
+            ? deleteFolderCount > 0
+              ? `文件夹「${deleteFolderDialog}」内有 ${deleteFolderCount} 个文件，删除后文件也会一并删除且无法恢复。确定继续？`
+              : `确定删除空文件夹「${deleteFolderDialog}」？`
+            : undefined
+        }
+        onClose={() => !dialogBusy && setDeleteFolderDialog(null)}
+        footer={
+          <>
+            <BtnGhost onClick={() => setDeleteFolderDialog(null)}>取消</BtnGhost>
+            <BtnPrimary danger onClick={() => void submitDeleteFolder()} disabled={dialogBusy}>
+              {dialogBusy ? "删除中…" : deleteFolderCount > 0 ? "删除文件夹及其内容" : "删除"}
             </BtnPrimary>
           </>
         }
